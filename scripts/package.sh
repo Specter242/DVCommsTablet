@@ -17,6 +17,9 @@ version="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["
 out="$repo/src/CommsTablet/bin/Release/net48"
 zipfile="$repo/dist/$id-$version.zip"
 
+# The contract check, with DV Car Changer 1.5.4's own assemblies (SHA-256 pinned),
+# which the Change page is written for.
+"$repo/scripts/fetch-check-mods.sh"
 PUBLIC_RELEASE=1 "$repo/scripts/check.sh"
 if ! build="$(dotnet build "$repo/src/CommsTablet/CommsTablet.csproj" -c Release -p:DvInstallDir="$dv" -p:PublicRelease=true --no-incremental -nologo 2>&1)"; then
     grep -E "error" <<<"$build" | sort -u >&2

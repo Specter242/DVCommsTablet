@@ -44,24 +44,29 @@ namespace CommsTablet
         /// Whether this game is a Multiplayer client: its client runs without
         /// the host's server. False without the Multiplayer mod.
         /// </summary>
-        internal static bool IsMultiplayerClient
+        internal static bool IsMultiplayerClient => Running(out var client, out var server) && client && !server;
+
+        /// <summary>Whether this game hosts a Multiplayer session: its server runs. False without the Multiplayer mod.</summary>
+        internal static bool IsMultiplayerHost => Running(out _, out var server) && server;
+
+        private static bool Running(out bool client, out bool server)
         {
-            get
+            client = server = false;
+            if (ClientRunning == null || ServerRunning == null)
+                return false;
+            if (lifecycle == null)
+                lifecycle = UnityEngine.Object.FindObjectOfType(Lifecycle);
+            if (lifecycle == null)
+                return false;
+            try
             {
-                if (ClientRunning == null || ServerRunning == null)
-                    return false;
-                if (lifecycle == null)
-                    lifecycle = UnityEngine.Object.FindObjectOfType(Lifecycle);
-                if (lifecycle == null)
-                    return false;
-                try
-                {
-                    return (bool)ClientRunning.GetValue(lifecycle) && !(bool)ServerRunning.GetValue(lifecycle);
-                }
-                catch (Exception)
-                {
-                    return false;
-                }
+                client = (bool)ClientRunning.GetValue(lifecycle);
+                server = (bool)ServerRunning.GetValue(lifecycle);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
     }

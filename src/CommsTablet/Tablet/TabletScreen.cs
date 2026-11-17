@@ -296,7 +296,6 @@ namespace CommsTablet.Tablet
             if (page != null)
                 page.Scroll = Mathf.Clamp(page.Scroll - page.Scroll % PerPage, 0, Mathf.Max(0, (count - 1) / PerPage * PerPage));
             var first = page?.Scroll ?? 0;
-            var selected = page?.Selected ?? -1;
             // Side views are drawn for the tiles on screen only.
             SideViews.Request(Enumerable.Range(first, Mathf.Max(0, Mathf.Min(PerPage, count - first))).Select(i => (tiles[i].Livery, tiles[i].Theme, tiles[i].Car)));
             for (var i = 0; i < PerPage; i++)
@@ -310,7 +309,7 @@ namespace CommsTablet.Tablet
                 tilePictures[i].gameObject.SetActive(picture != null);
                 if (!on) continue;
                 var tile = tiles[index];
-                var current = index == selected;
+                var current = page.IsOn(index);
                 tilePlates[i].sprite = PanelSprite(current ? TabletArt.CardOn : TabletArt.Card);
                 tileNames[i].text = tile.Label;
                 tileNames[i].color = tile.Back ? TabletArt.Soft : current ? TabletArt.Amber : TabletArt.Text;

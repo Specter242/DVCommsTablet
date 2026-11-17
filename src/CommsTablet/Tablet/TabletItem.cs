@@ -269,6 +269,19 @@ namespace CommsTablet.Tablet
             wheels.cancelSound = stock.cancelSound;
             if (stock.trainHighlighter != null)
                 wheels.trainHighlighter = Object.Instantiate(stock.trainHighlighter, rearrange.transform, false);
+
+            // Change (DV Car Changer) too, with a copy of its own.
+            var changer = new GameObject("ChangeController");
+            changer.transform.SetParent(stock.transform.parent, false);
+            var change = changer.AddComponent<TabletChangeMode>();
+            change.signalOrigin = stock.signalOrigin;
+            change.display = stock.display;
+            change.validMaterial = stock.validMaterial;
+            change.hoverOverCar = stock.hoverOverCar;
+            change.confirmSound = stock.confirmSound;
+            change.cancelSound = stock.cancelSound;
+            if (stock.trainHighlighter != null)
+                change.trainHighlighter = Object.Instantiate(stock.trainHighlighter, changer.transform, false);
             Object.DestroyImmediate(stock);
         }
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 (2026-11-17)
+
+- **Workshop: Change**, for DV Car Changer 1.5.4. Aim at a car and use
+  the tablet, then switch its modifications (a loco's smokestack, pilot,
+  headlights, and the like) on and off from a list. One that clashes with
+  one already on asks you to press it again to swap. Car Changer saves
+  them with your game, as with its radio.
+- Change is hidden on Multiplayer clients: only the host can change cars,
+  and only the host sees the changes. Another version of Car Changer hides
+  it until the tablet is updated for that version.
+
 ## 0.1.1 (2026-11-17)
 
 - **Spawn and Paint pictures** now fit every engine to its tile. Some

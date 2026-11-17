@@ -23,6 +23,9 @@ if grep -q -E "warning CS" <<<"$build"; then
     grep -E "warning CS" <<<"$build" | sort -u >&2
     exit 1
 fi
+# DV Car Changer's pinned assemblies (scripts/fetch-check-mods.sh), when fetched.
+pinned=()
+[[ -f "$repo/.deps/DVCarChanger/CarChanger.Game.dll" ]] && pinned=("$repo/.deps/DVCarChanger/CarChanger.Common.dll" "$repo/.deps/DVCarChanger/CarChanger.Game.dll")
 mono "$project/bin/Release/net48/CommsTablet.Check.exe" "$dv/DerailValley_Data/Managed" \
     "$dv/Mods/Multiplayer/Multiplayer.dll" "$dv/Mods/DVCustomCarLoader/CCL.Importer.dll" \
-    "$dv/Mods/RealisticFiring/RealisticFiring.dll" "$dv/Mods/DVLangHelper/DVLangHelper.Data.dll" "$@"
+    "$dv/Mods/RealisticFiring/RealisticFiring.dll" "$dv/Mods/DVLangHelper/DVLangHelper.Data.dll" "${pinned[@]}" "$@"

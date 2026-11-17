@@ -27,7 +27,10 @@ the game is not in the default Steam folder on Linux.
   under Mono, without Unity: the private members it uses, its Harmony
   targets, and its links to Multiplayer, Custom Car Loader, and Realistic
   Firing when those are installed. `PUBLIC_RELEASE=1 scripts/check.sh`
-  checks the public build.
+  checks the public build. `scripts/fetch-check-mods.sh` puts DV Car
+  Changer 1.5.4's assemblies (its GitHub release, SHA-256 pinned) in
+  `.deps/`, and the check then holds the Change page to that version;
+  `scripts/package.sh` always fetches them.
 - `scripts/package.sh` builds the public release zip in `dist/`.
 
 The in-game self-test the author runs is not part of this repository; the
@@ -47,6 +50,9 @@ working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
 
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
+
+**0.1.2**: the Workshop's Change page for DV Car Changer 1.5.4: switch a
+car's modifications on and off.
 
 **0.1.1**: Spawn and Paint pictures fit every engine to its tile, and show
 the doors and handles.

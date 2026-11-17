@@ -37,6 +37,7 @@ namespace CommsTablet.Tablet
         internal CommsRadioCargoLoader Cargo { get; private set; }
         internal TabletPaintMode Paint { get; private set; }
         internal TabletRearrangeMode Rearrange { get; private set; }
+        internal TabletChangeMode Change { get; private set; }
         internal JunctionRemoteLogic Switch { get; private set; }
         internal RerailController Rerail { get; private set; }
         internal CommsRadioCarDeleter Clear { get; private set; }
@@ -91,6 +92,7 @@ namespace CommsTablet.Tablet
             Cargo = GetComponentInChildren<CommsRadioCargoLoader>(true);
             Paint = GetComponentInChildren<TabletPaintMode>(true);
             Rearrange = GetComponentInChildren<TabletRearrangeMode>(true);
+            Change = GetComponentInChildren<TabletChangeMode>(true);
             Switch = GetComponentInChildren<JunctionRemoteLogic>(true);
             Rerail = GetComponentInChildren<RerailController>(true);
             Clear = GetComponentInChildren<CommsRadioCarDeleter>(true);
@@ -108,17 +110,18 @@ namespace CommsTablet.Tablet
             var cargo = new CargoPage(this);
             var paint = new PaintPage(this);
             var wheels = new RearrangePage(this);
+            var change = new ChangePage(this);
             var switches = new SwitchPage(this);
             var map = new MapPage(this);
             var rerail = new RerailPage(this);
             var clear = new ClearPage(this);
             var startup = new StartupPage(this);
             var damage = new DamagePage(this);
-            Pages.AddRange(new TabletPage[] { summon, buy, spawn, cargo, paint, wheels, switches, map, rerail, clear, startup, damage });
+            Pages.AddRange(new TabletPage[] { summon, buy, spawn, cargo, paint, wheels, change, switches, map, rerail, clear, startup, damage });
             // The game's own interface glyphs where it has one (a paint roller is drawn in their style).
             Apps.Add(new TabletApp("Vehicles", "UI_TrainLoco", "vehicles", summon, buy, spawn));
             Apps.Add(new TabletApp("Cargo", "UI_Item", "cargo", cargo));
-            Apps.Add(new TabletApp("Workshop", null, "workshop", paint, wheels));
+            Apps.Add(new TabletApp("Workshop", null, "workshop", paint, wheels, change));
             Apps.Add(new TabletApp("Switches", "UI_BookletSchematicMap", "switches", switches, map));
             Apps.Add(new TabletApp("Tools", "UI_Mods", "tools", rerail, clear, startup, damage));
             // The radio's flashlight, a tile that switches it, offered where the player's radio has its Light.
@@ -138,6 +141,8 @@ namespace CommsTablet.Tablet
                 Paint.CarChanged += Changed;
             if (Rearrange != null)
                 Rearrange.CarChanged += Changed;
+            if (Change != null)
+                Change.CarChanged += Changed;
             if (Summon != null)
             {
                 Summon.CarSummoned += WorkTrains.Summoned;
@@ -528,6 +533,8 @@ namespace CommsTablet.Tablet
                 Paint.CarChanged -= Changed;
             if (Rearrange != null)
                 Rearrange.CarChanged -= Changed;
+            if (Change != null)
+                Change.CarChanged -= Changed;
             WorkTrains.Unfollow(workTrains);
             workTrains = null;
             if (!UnloadWatcher.isUnloading)

@@ -405,6 +405,55 @@ namespace CommsTablet.Check
             public static void PressAt(int view, UnityEngine.Vector2 canvas) { }
         }
 
+        /// <summary>
+        /// DV Car Changer (the Change page): pinned to 1.5.4. Without its
+        /// assemblies the link resolves nothing and the page stays hidden; with
+        /// them (scripts/fetch-check-mods.sh puts 1.5.4's in .deps/), its
+        /// Info.json must name the pinned version and every member the page
+        /// calls must resolve with the type it is used as.
+        /// </summary>
+        private static void CarChanger(List<string> mods)
+        {
+            Check(CarChangerLink.Pinned == "1.5.4" && CarChangerLink.Accepts("1.5.4") && !CarChangerLink.Accepts("1.5.5")
+                  && !CarChangerLink.Accepts("1.5") && !CarChangerLink.Accepts(null),
+                "the Change page accepts Car Changer 1.5.4 alone");
+            if (!mods.Contains("CarChanger.Game"))
+            {
+                Check(!CarChangerLink.Resolves && !CarChangerLink.Present, "without Car Changer, the Change page's link finds nothing and the page stays hidden");
+                return;
+            }
+            var game = AppDomain.CurrentDomain.GetAssemblies().First(a => a.GetName().Name == "CarChanger.Game");
+            var info = Directory.GetFiles(Path.GetDirectoryName(game.Location)).FirstOrDefault(f => Path.GetFileName(f).Equals("Info.json", StringComparison.OrdinalIgnoreCase));
+            var version = info == null ? null : System.Text.RegularExpressions.Regex.Match(File.ReadAllText(info), "\"Version\"\\s*:\\s*\"([^\"]*)\"").Groups[1].Value;
+            Check(CarChangerLink.Accepts(version), $"the Car Changer given is the pinned {CarChangerLink.Pinned}", $"its Info.json says {version ?? "nothing"}");
+            Check(CarChangerLink.Resolves, "Car Changer's members the Change page calls", string.Join(", ", CarChangerLink.Missing()));
+            var config = AccessTools.TypeByName("CarChanger.Common.ModelConfig");
+            var applied = AccessTools.TypeByName("CarChanger.Game.Components.AppliedChange");
+            if (config == null || applied == null)
+                return;
+            var loaded = AccessTools.Field(AccessTools.TypeByName("CarChanger.Game.ChangeManager"), "LoadedConfigs");
+            Check(loaded != null && loaded.IsStatic && loaded.FieldType == typeof(Dictionary<,>).MakeGenericType(typeof(DV.ThingTypes.TrainCarLivery), typeof(List<>).MakeGenericType(config)),
+                "Car Changer's LoadedConfigs maps a livery to its list of modifications");
+            Check(typeof(UnityEngine.MonoBehaviour).IsAssignableFrom(applied) && AccessTools.Field(applied, "Config")?.FieldType == config,
+                "a change on a car is a component carrying its modification (taken off by destroying it)");
+            Check(AccessTools.Method(applied, "AddChange", new[] { typeof(TrainCar), config }) is MethodInfo add && add.IsStatic && add.ReturnType == applied,
+                "Car Changer's AddChange(car, modification) adds the change's component");
+            Check(AccessTools.Method(AccessTools.TypeByName("CarChanger.Game.Extensions"), "GetAppliedChanges", new[] { typeof(TrainCar) }) is MethodInfo get
+                  && get.IsStatic && get.ReturnType == typeof(List<>).MakeGenericType(applied),
+                "Car Changer's GetAppliedChanges(car) lists the changes on a car, as it saves them");
+            Check(AccessTools.Method(config, "CanCombine", new[] { config, config }) is MethodInfo combine && combine.IsStatic && combine.ReturnType == typeof(bool),
+                "Car Changer's CanCombine(a, b), the rule for clashes");
+            Check(AccessTools.Field(config, "ModificationId")?.FieldType == typeof(string) && AccessTools.Property(config, "LocalizationKey")?.PropertyType == typeof(string),
+                "a modification's id and the key of its name");
+            Check(typeof(ICommsRadioMode).IsAssignableFrom(CarChangerLink.RadioMode), "Car Changer's radio mode, which the page follows, is a comms radio mode");
+            // Saving: Car Changer writes each car's changes from its components when the game saves, and puts them back as cars spawn.
+            var saving = AccessTools.TypeByName("CarChanger.Game.Patches.SaveGameManagerPatches");
+            var spawning = AccessTools.TypeByName("CarChanger.Game.Patches.CarSpawnerPatches");
+            Check(saving != null && AccessTools.Method(saving, "InjectSaveData") != null && AccessTools.Method(saving, "ExtractSaveData") != null
+                  && spawning != null && AccessTools.Method(spawning, "DoInitialSetup") != null,
+                "Car Changer saves the changes on each car and restores them as cars spawn");
+        }
+
         private static void Optional(List<string> mods)
         {
             if (mods.Contains("Multiplayer"))
@@ -453,6 +502,7 @@ namespace CommsTablet.Check
                 var worn = AccessTools.Method(AccessTools.TypeByName("SkinManagerMod.SkinManager"), "GetCurrentCarSkin");
                 Check(worn != null && worn.ReturnType == typeof(ValueTuple<string, string>), "Skin Manager's GetCurrentCarSkin returns (exterior, interior)");
             }
+            CarChanger(mods);
             if (mods.Contains("RealisticFiring"))
             {
                 var theirs = AccessTools.TypeByName("RealisticFiring.Items.FireIronLoading") is Type loading

@@ -80,6 +80,9 @@ namespace CommsTablet.Pages
         /// <summary>The tile of the choice the mode is aiming with, or -1.</summary>
         internal abstract int Selected { get; }
 
+        /// <summary>Whether the screen lights <paramref name="tile"/>: the selected one, or (Change) each one that is on.</summary>
+        internal virtual bool IsOn(int tile) => tile == Selected;
+
         /// <summary>A short message about the last choice, shown until the next one.</summary>
         internal string Notice;
 

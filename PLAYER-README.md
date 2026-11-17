@@ -29,8 +29,11 @@ the tablet just as you would the radio.
   picture of each livery).
 - **Cargo:** load and unload the cars you spawned.
 - **Workshop:** Paint (aim at a car first, then pick from pictures of it in
-  each paint; Skin Manager's skins when installed) and Wheels (Rearranged's
-  S282 and S060 wheel arrangements, when Rearranged is installed).
+  each paint; Skin Manager's skins when installed), Wheels (Rearranged's
+  S282 and S060 wheel arrangements, when Rearranged is installed), and
+  Change (DV Car Changer's modifications, such as a loco's smokestack or
+  pilot: aim at a car, then switch each on or off; one that clashes with
+  one already on asks you to press it again to swap).
 - **Switches:** Switch (point at a switch and use the tablet) and Map (the
   route map and every station's yard maps, with each switch's setting; the
   locomotives show with the game's Map Blips setting; with the Dispatcher
@@ -59,6 +62,8 @@ Paint, Rerail, and the like) ask you to take it in hand.
 - **Skin Manager:** the Paint page shows its skins.
 - **Custom Car Loader:** its engines in Spawn, its work trains in Buy.
 - **Rearranged S282 / S060:** the Wheels page.
+- **DV Car Changer 1.5.4:** the Change page. Another version of Car
+  Changer hides it until the tablet is updated for that version.
 - **Realistic Firing, AI Engineer:** their apps (Firing, Engineers), and
   their own tablets retired.
 
@@ -67,7 +72,9 @@ Paint, Rerail, and the like) ask you to take it in hand.
 Every player needs the mod. It has not been tried in Multiplayer yet; the
 radio's work it does goes through the game's own code, as the radio's
 does, and Multiplayer's checks apply to it. Engineers is hidden on
-clients unless AI Engineer allows driving there.
+clients unless AI Engineer allows driving there. Change is hidden on
+clients: Car Changer does not share its changes between players, so only
+the host can change cars, and only the host sees those changes.
 
 ## Removing it
 
