@@ -294,6 +294,11 @@ namespace CommsTablet.Check
                     error = e.GetBaseException().Message;
                 }
                 Console.WriteLine($"Settings of {type.FullName}: " + (error ?? string.Join(", ", read.GroupBy(r => r.Kind).Select(g => $"{g.Count()} {g.Key}"))));
+                // COMMS_TABLET_ROWS=<settings type> prints that type's rows as the Settings app lists them, in order (a review aid).
+                if (error == null && Environment.GetEnvironmentVariable("COMMS_TABLET_ROWS") == type.FullName)
+                    foreach (var row in read)
+                        Console.WriteLine($"  {row.Kind,-7} {row.Label}{(row.Badge != null ? $" [{row.Badge}]" : "")}{(row.Field != null ? $" ({row.Field.Name})" : "")}"
+                                          + (row.Kind == SettingKind.Number ? $" {row.Text}{(row.Bounded ? $", {row.Min} to {row.Max}" : "")}, step {row.Step}" : row.Kind == SettingKind.Choice ? $" {row.Text}" : ""));
                 Check(error == null && read.Any(r => r.Kind != SettingKind.Heading), $"{type.FullName} reads into settings rows", error);
                 // A mod's one-time actions (Realistic Firing 1.23.0's give and renew switches) never become rows.
                 var oneTime = read.Where(r => r.Field != null && ModSettingsLink.OneTimeFields.Contains(r.Field.Name)).Select(r => r.Field.Name).ToList();

@@ -1,3 +1,9 @@
 {
-  "Releases": []
+  "Releases": [
+    {
+      "Id": "CommsTablet",
+      "Version": "0.1.0",
+      "DownloadUrl": "https://github.com/Specter242/DVCommsTablet/releases/download/v0.1.0/CommsTablet-0.1.0.zip"
+    }
+  ]
 }
