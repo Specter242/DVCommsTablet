@@ -35,10 +35,13 @@ public release (`-p:PublicRelease=true`) leaves out its hooks.
 
 ## Guest apps
 
-Other mods can put an app on the tablet: a guest publishes a class named
-`<Assembly>.CommsTabletApp` with static members the tablet binds by name
-(contract version 1). Realistic Firing's and AI Engineer's are the
-examples; `src/CommsTablet/Guests/` is the host side.
+Other mods can put an app on the tablet's home screen: publish a static
+class named `<YourAssembly>.CommsTabletApp`, and the tablet finds it and
+binds its members by reflection, with no reference to `CommsTablet.dll`.
+The full contract (version 1), with its members, when each is called, the
+screen, the buttons, versioning, and Realistic Firing's and AI Engineer's
+working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
+`src/CommsTablet/Guests/` is the host side.
 
 ## Releases
 
