@@ -1,0 +1,31 @@
+bin/
+obj/
+dist/
+*.user
+.vs/
+.idea/
+__pycache__/
+*.pyc
+
+# Decompiled game code stays local.
+.decompiled/
+
+# Game assemblies, third-party binaries, and generated debug symbols.
+*.dll
+*.pdb
+*.exe
+*.zip
+
+# Local documentation, assistant configuration, and research.
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.agents/
+.claude/
+.codex/
+.cursor/
+.t3/
+docs/
+research/
+.env
+.env.*

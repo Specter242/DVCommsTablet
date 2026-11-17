@@ -1,0 +1,17 @@
+{
+  "Id": "CommsTablet",
+  "DisplayName": "Comms Tablet",
+  "Author": "Specter242",
+  "Version": "0.1.0",
+  "ManagerVersion": "0.28.2",
+  "AssemblyName": "CommsTablet.dll",
+  "EntryMethod": "CommsTablet.Main.Load",
+  "LoadAfter": [
+    "DVCustomCarLoader",
+    "Multiplayer",
+    "SkinManagerMod"
+  ],
+  "MultiplayerCompatibility": "All",
+  "HomePage": "https://www.nexusmods.com/derailvalley/mods/1845",
+  "Repository": "https://raw.githubusercontent.com/Specter242/DVCommsTablet/main/repository.json"
+}

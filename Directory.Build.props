@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <!-- Override with -p:DvInstallDir=... when the game lives elsewhere. -->
+    <DvInstallDir Condition="'$(DvInstallDir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/Derail Valley</DvInstallDir>
+    <DvManagedDir>$(DvInstallDir)/DerailValley_Data/Managed</DvManagedDir>
+    <DvModManagerDir>$(DvManagedDir)/UnityModManager</DvModManagerDir>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <!-- The public release (scripts/package.sh builds with -p:PublicRelease=true): none of the
+       in-game self-test's hooks or records, as no developer options or testbeds ship.
+       Every other build keeps them. -->
+  <PropertyGroup Condition="'$(PublicRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);PUBLIC_RELEASE</DefineConstants>
+  </PropertyGroup>
+  <!-- Published assemblies must not carry local paths (the debug-symbol path
+       names the build machine's home folder). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))=/DVCommsTablet/</PathMap>
+  </PropertyGroup>
+</Project>
