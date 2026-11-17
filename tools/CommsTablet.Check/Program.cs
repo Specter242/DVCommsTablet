@@ -46,6 +46,7 @@ namespace CommsTablet.Check
             Targets();
             Mounting();
             LoadSites();
+            SwitchBooks(mods);
             GuestBinding();
             SettingsRows();
             Release();
@@ -203,11 +204,23 @@ namespace CommsTablet.Check
         // The guest contract binds a well-formed guest, and refuses another contract or a wrong signature at binding.
         private static void GuestBinding()
         {
-            Check(GuestContract.Min == 1 && GuestContract.Max == 1, "the guest contract is version 1");
+            Check(GuestContract.Min == 1 && GuestContract.Max == 2, "the tablet takes guest contracts 1 and 2");
             var good = Guests.GuestApp.Bind(typeof(GoodGuest), "GoodGuest", out var why);
-            Check(good != null && good.Id == "good" && good.Tablet == "Good_Tablet" && good.Contract == 1, "a well-formed guest binds", why);
-            Check(Guests.GuestApp.Bind(typeof(LaterGuest), "LaterGuest", out why) == null && why != null && why.Contains("99") && why.Contains("1 to 1"),
+            Check(good != null && good.Id == "good" && good.Tablet == "Good_Tablet" && good.Contract == 1 && !good.CarFirst, "a well-formed guest binds", why);
+            Check(Guests.GuestApp.Bind(typeof(LaterGuest), "LaterGuest", out why) == null && why != null && why.Contains("99") && why.Contains("1 to 2"),
                 "a guest of another contract is refused, naming both versions", why);
+            var car = Guests.GuestApp.Bind(typeof(CarGuest), "CarGuest", out why);
+            Check(car != null && car.Contract == 2 && car.CarFirst && car.BeamColor() == UnityEngine.Color.red,
+                "a contract-2 guest with Fits and Chosen binds car first, with its beam", why);
+            var plain = Guests.GuestApp.Bind(typeof(PlainGuest2), "PlainGuest2", out why);
+            Check(plain != null && plain.Contract == 2 && !plain.CarFirst && plain.BeamColor() == null, "a contract-2 guest without them binds as before", why);
+            Check(Guests.GuestApp.Bind(typeof(HalfCarGuest), "HalfCarGuest", out why) == null && why != null && why.Contains("Fits and Chosen"),
+                "a car-first guest needs both Fits and Chosen", why);
+            var older = Guests.GuestApp.Bind(typeof(OldCarGuest), "OldCarGuest", out why);
+            Check(older != null && !older.CarFirst, "a contract-1 guest's Fits is not read: it is not car first", why);
+            var theirs = Guests.GuestApp.Bind(typeof(CarGuest), "CarChanger.Game", out _);
+            Check(Pages.ChangePage.StepsAsideFor(new[] { theirs }) && !Pages.ChangePage.StepsAsideFor(new[] { car, plain }),
+                "the native Change page steps aside for Car Changer's own app (a guest from CarChanger.Game), and for no other");
             Check(Guests.GuestApp.Bind(typeof(WrongGuest), "WrongGuest", out why) == null && why != null && why.Contains("Open") && why.Contains("wrong signature"),
                 "a guest whose Open has the wrong signature is refused at binding", why);
         }
@@ -382,6 +395,86 @@ namespace CommsTablet.Check
             public static bool Scroll(int view, bool forward) => false;
         }
 
+        // Contract 2's car-first members, on a guest otherwise like GoodGuest.
+        internal static class CarGuest
+        {
+            public const int Contract = 2;
+            public const string Id = "car", Name = "Car";
+            public static UnityEngine.Texture2D Icon() => null;
+            public static bool Available() => true;
+            public static int Open(UnityEngine.RectTransform region, UnityEngine.GameObject tablet, Action invalidate, Action<int, UnityEngine.Rect, bool> placeSlot,
+                Action<int> hideSlotsFrom, int slotCount, bool vr) => 0;
+            public static void Close(int view) { }
+            public static void Shown(int view, bool shown) { }
+            public static void Held(int view, bool held) { }
+            public static void Update(int view) { }
+            public static void Draw(int view) { }
+            public static void Pressed(int view, int slot) { }
+            public static UnityEngine.Rect PressArea(int view) => default;
+            public static void PressAt(int view, UnityEngine.Vector2 canvas) { }
+            public static bool Use(int view) => false;
+            public static bool Fits(TrainCar car) => true;
+            public static void Chosen(int view, TrainCar car) { }
+            public static UnityEngine.Color BeamColor() => UnityEngine.Color.red;
+        }
+
+        internal static class PlainGuest2
+        {
+            public const int Contract = 2;
+            public const string Id = "plain2", Name = "Plain";
+            public static UnityEngine.Texture2D Icon() => null;
+            public static bool Available() => true;
+            public static int Open(UnityEngine.RectTransform region, UnityEngine.GameObject tablet, Action invalidate, Action<int, UnityEngine.Rect, bool> placeSlot,
+                Action<int> hideSlotsFrom, int slotCount, bool vr) => 0;
+            public static void Close(int view) { }
+            public static void Shown(int view, bool shown) { }
+            public static void Held(int view, bool held) { }
+            public static void Update(int view) { }
+            public static void Draw(int view) { }
+            public static void Pressed(int view, int slot) { }
+            public static UnityEngine.Rect PressArea(int view) => default;
+            public static void PressAt(int view, UnityEngine.Vector2 canvas) { }
+        }
+
+        internal static class HalfCarGuest
+        {
+            public const int Contract = 2;
+            public const string Id = "half", Name = "Half";
+            public static UnityEngine.Texture2D Icon() => null;
+            public static bool Available() => true;
+            public static int Open(UnityEngine.RectTransform region, UnityEngine.GameObject tablet, Action invalidate, Action<int, UnityEngine.Rect, bool> placeSlot,
+                Action<int> hideSlotsFrom, int slotCount, bool vr) => 0;
+            public static void Close(int view) { }
+            public static void Shown(int view, bool shown) { }
+            public static void Held(int view, bool held) { }
+            public static void Update(int view) { }
+            public static void Draw(int view) { }
+            public static void Pressed(int view, int slot) { }
+            public static UnityEngine.Rect PressArea(int view) => default;
+            public static void PressAt(int view, UnityEngine.Vector2 canvas) { }
+            public static bool Fits(TrainCar car) => true;
+        }
+
+        internal static class OldCarGuest
+        {
+            public const int Contract = 1;
+            public const string Id = "old", Name = "Old";
+            public static UnityEngine.Texture2D Icon() => null;
+            public static bool Available() => true;
+            public static int Open(UnityEngine.RectTransform region, UnityEngine.GameObject tablet, Action invalidate, Action<int, UnityEngine.Rect, bool> placeSlot,
+                Action<int> hideSlotsFrom, int slotCount, bool vr) => 0;
+            public static void Close(int view) { }
+            public static void Shown(int view, bool shown) { }
+            public static void Held(int view, bool held) { }
+            public static void Update(int view) { }
+            public static void Draw(int view) { }
+            public static void Pressed(int view, int slot) { }
+            public static UnityEngine.Rect PressArea(int view) => default;
+            public static void PressAt(int view, UnityEngine.Vector2 canvas) { }
+            public static bool Fits(TrainCar car) => true;
+            public static void Chosen(int view, TrainCar car) { }
+        }
+
         internal static class LaterGuest
         {
             public const int Contract = 99;
@@ -427,6 +520,14 @@ namespace CommsTablet.Check
             var version = info == null ? null : System.Text.RegularExpressions.Regex.Match(File.ReadAllText(info), "\"Version\"\\s*:\\s*\"([^\"]*)\"").Groups[1].Value;
             Check(CarChangerLink.Accepts(version), $"the Car Changer given is the pinned {CarChangerLink.Pinned}", $"its Info.json says {version ?? "nothing"}");
             Check(CarChangerLink.Resolves, "Car Changer's members the Change page calls", string.Join(", ", CarChangerLink.Missing()));
+            // Car Changer's own app on the tablet, in a build that has one: it binds car first, and the native page steps aside for it.
+            var own = game.GetType(CarChangerLink.GameAssembly + "." + Guests.GuestRegistry.ClassName, false);
+            if (own != null)
+            {
+                var bound = Guests.GuestApp.Bind(own, CarChangerLink.GameAssembly, out var why);
+                Check(bound != null && bound.Contract == 2 && bound.CarFirst, "Car Changer's own app binds as a contract-2, car-first guest", why);
+                Check(bound != null && Pages.ChangePage.StepsAsideFor(new[] { bound }), "the native Change page steps aside for Car Changer's own app");
+            }
             var config = AccessTools.TypeByName("CarChanger.Common.ModelConfig");
             var applied = AccessTools.TypeByName("CarChanger.Game.Components.AppliedChange");
             if (config == null || applied == null)
@@ -452,6 +553,75 @@ namespace CommsTablet.Check
             Check(saving != null && AccessTools.Method(saving, "InjectSaveData") != null && AccessTools.Method(saving, "ExtractSaveData") != null
                   && spawning != null && AccessTools.Method(spawning, "DoInitialSetup") != null,
                 "Car Changer saves the changes on each car and restores them as cars spawn");
+        }
+
+        /// <summary>
+        /// The switch books: the touch cells the map reads, sized from the
+        /// map's own grid, and Double Track's maps (CommsTablet.Books), their
+        /// drawings, Harmony targets, order, and stand-down rule. With Double
+        /// Track 2.1.1's assembly given (scripts/fetch-check-mods.sh), the list
+        /// of its switches the maps read must be there.
+        /// </summary>
+        private static void SwitchBooks(List<string> mods)
+        {
+            UnityEngine.Vector2 V(float x, float y) => new UnityEngine.Vector2(x, y);
+            UnityEngine.Vector2Int G(int x, int y) => new UnityEngine.Vector2Int(x, y);
+            bool Near(UnityEngine.Vector2 a, UnityEngine.Vector2 b) => (a - b).sqrMagnitude < 1e-4f;
+            var route = Map.BookletReader.TouchArea(G(32, 32), G(40, 40));
+            Check(Near(route, V(1600, 1600)) && Near(Map.BookletReader.TouchArea(G(23, 31), G(23, 31)), V(1150, 1550)),
+                "the touch area is the game's own grid at 50 units, whatever grid a mod gives", $"{route}");
+            Check(Near(Map.BookletReader.CellMiddle(V(1600, 1600), V(1600, 1600), G(32, 32), G(0, 31)), V(25, 1575))
+                  && Near(Map.BookletReader.CellMiddle(V(2000, 1800), V(1600, 1600), G(32, 32), G(0, 0)), V(225, 125)),
+                "a stock route-map cell is 50 units, centred on the page");
+            Check(Near(Map.BookletReader.CellMiddle(V(1600, 1600), V(1600, 1600), G(40, 40), G(0, 39)), V(20, 1580))
+                  && Near(Map.BookletReader.CellMiddle(V(1600, 1600), V(1600, 1600), G(40, 40), G(20, 20)), V(820, 820)),
+                "a re-laid 40 x 40 route map's cell is 40 units (the game's touch area over the grid)");
+            Check(Map.BookletReader.TouchArea(G(0, 0), G(40, 40)) == V(2000, 2000), "a grid the data lacks is taken as the given one");
+
+            var drawing = CommsTablet.Books.RouteMapBook.Spec;
+            Check(drawing != null && drawing.layout == "Normal" && drawing.grid == 40 && Math.Abs(drawing.Cell - 40f) < 1e-4f
+                  && drawing.switches.Count == 158 && drawing.doubleTrack.Count == 85 && drawing.stockCells.Count == 73
+                  && drawing.doubleTrack.Count + drawing.bookletOnly.Count == 114,
+                "the route map's drawing loads from the assembly: Normal, 40 x 40, 73 stock and 85 Double Track switches of its 114",
+                drawing == null ? "missing" : $"{drawing.layout} {drawing.grid} {drawing.switches.Count} {drawing.doubleTrack.Count} {drawing.stockCells.Count}");
+            var booklet = CommsTablet.Books.StationBooklet.Data;
+            Check(booklet != null && booklet.layout == "Normal" && booklet.doubleTrackTotal == 114 && booklet.pages.Count == 8
+                  && booklet.insert?.yardId == "H" && booklet.insert.after == booklet.insert.copyOf,
+                "the booklet's drawing loads from the assembly: Normal, 8 pages changed, Steel Mill H added after the page it copies",
+                booklet == null ? "missing" : $"{booklet.layout} {booklet.doubleTrackTotal} {booklet.pages.Count} {booklet.insert?.yardId}");
+
+            var targets = CommsTablet.Books.DoubleTrackBooks.Targets().ToList();
+            Check(targets.Count == 4 && targets.All(t => t.Method != null), "the methods the books are drawn through exist",
+                string.Join(", ", targets.Where(t => t.Method == null).Select(t => t.Label)));
+            Check(AccessTools.Field(typeof(ChapterSelector), "allChapters")?.FieldType == typeof(List<ChapterSelector.PageBookChapter>)
+                  && AccessTools.Field(typeof(ChapterSelector.PageBookChapter), "startingPage") != null && AccessTools.Field(typeof(ChapterSelector.PageBookChapter), "endingPage") != null,
+                "the booklet's chapters (the hump yard's page goes in Steel Mill's)");
+            Check(AccessTools.Field(typeof(JunctionGeneratedDataRuntime), "junctionWorldGridSize")?.IsPublic == true
+                  && AccessTools.Field(typeof(JunctionGeneratedDataRuntime), "junctionStationGridSize")?.IsPublic == true,
+                "the level's own grids, unpatched (the touch area, and whether another mod re-laid the route map)");
+            Check(typeof(Junction.JunctionData).IsValueType, "a switch's data is copied, not shared, when a touch cell is made for it");
+            var patches = typeof(Main).Assembly.GetTypes().Where(t => t.Namespace == "CommsTablet.Books" && t.GetCustomAttributes<HarmonyPatch>().Any()).ToList();
+            var unordered = patches.Where(t => !(t.GetCustomAttribute<HarmonyAfter>()?.info.after is string[] after
+                                                 && new[] { "Interchanges", "DoubleTrack", "DoubleTrackMaps" }.All(after.Contains))).Select(t => t.Name).ToList();
+            Check(patches.Count == 6 && unordered.Count == 0, "each of the books' 6 patches runs after Interchange Yards', Double Track's and Double Track Maps'",
+                $"{patches.Count} patches; unordered: {string.Join(", ", unordered)}");
+            Check(CommsTablet.Books.DoubleTrackBooks.DrawnBy(new[] { ("Interchanges", "Interchanges"), ("CommsTablet", "CommsTablet") }) == null
+                  && CommsTablet.Books.DoubleTrackBooks.DrawnBy(new[] { ("Interchanges", "Interchanges"), ("DoubleTrackMaps", "DoubleTrackMaps") }) == "DoubleTrackMaps"
+                  && CommsTablet.Books.DoubleTrackBooks.DrawnBy(new[] { ("someone", "DoubleTrack") }) == "DoubleTrack",
+                "the tablet stands down for Double Track's or Double Track Maps' patches on the same methods, by owner or assembly, and not for others'");
+            var info = Path.Combine(Path.GetDirectoryName(typeof(Main).Assembly.Location), "Info.json");
+            var loadAfter = File.Exists(info) ? File.ReadAllText(info) : "";
+            Check(new[] { "\"DoubleTrack\"", "\"DoubleTrackMaps\"", "\"Interchanges\"" }.All(loadAfter.Contains),
+                "the tablet loads after Double Track, Double Track Maps and Interchange Yards (Info.json)");
+            if (mods.Contains("DoubleTrack"))
+            {
+                var added = AccessTools.Field(AccessTools.TypeByName("DoubleTrack.AllTracksPatch"), "AddedJunctions");
+                Check(added != null && added.IsStatic && added.FieldType == typeof(List<Junction>),
+                    "Double Track 2.1.1's list of the switches it built (DoubleTrack.AllTracksPatch.AddedJunctions)");
+                Check(CommsTablet.Books.BookSwitches.Loaded, "with Double Track's assembly, the maps find its list");
+            }
+            else
+                Check(!CommsTablet.Books.BookSwitches.Loaded, "without Double Track, the maps find no list and leave the books alone");
         }
 
         private static void Optional(List<string> mods)

@@ -8,13 +8,24 @@ namespace CommsTablet.Pages
     {
         internal readonly GuestApp Guest;
 
-        internal GuestPage(TabletRadio radio, GuestApp guest) : base(radio) => Guest = guest;
+        /// <summary>The car-first guest's mode; null for another guest.</summary>
+        internal readonly TabletGuestCarMode CarMode;
+
+        private TrainCar remembered;
+
+        internal GuestPage(TabletRadio radio, GuestApp guest, TabletGuestCarMode carMode = null) : base(radio)
+        {
+            Guest = guest;
+            CarMode = carMode;
+            if (carMode != null)
+                carMode.UseAtCar = () => radio.UseGuest(this);
+        }
 
         internal override string Name => Guest.Name;
 
         internal override string Label => Guest.Name;
 
-        internal override ICommsRadioMode Mode => null;
+        internal override ICommsRadioMode Mode => CarMode;
 
         internal override bool Available => Guest.Available;
 
@@ -26,8 +37,16 @@ namespace CommsTablet.Pages
 
         internal override void Press(int tile) { }
 
-        internal override void Capture() { }
+        internal override void Capture() => remembered = CarMode?.Car;
 
-        internal override void Reapply() { }
+        /// <summary>Taken up again near the car it had chosen, a car-first guest's tablet chooses it again, as Paint and Change do.</summary>
+        internal override void Reapply()
+        {
+            var player = PlayerManager.PlayerTransform;
+            if (CarMode != null && remembered != null && remembered.gameObject.activeInHierarchy && player != null
+                && (remembered.transform.position - player.position).sqrMagnitude < TabletCarMode.SignalRange * TabletCarMode.SignalRange)
+                CarMode.Choose(remembered);
+            remembered = null;
+        }
     }
 }

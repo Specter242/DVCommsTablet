@@ -63,9 +63,26 @@ Paint, Rerail, and the like) ask you to take it in hand.
 - **Custom Car Loader:** its engines in Spawn, its work trains in Buy.
 - **Rearranged S282 / S060:** the Wheels page.
 - **DV Car Changer 1.5.4:** the Change page. Another version of Car
-  Changer hides it until the tablet is updated for that version.
+  Changer hides it until the tablet is updated for that version. If Car
+  Changer adds an app of its own to the tablet, the Change page steps
+  aside for it.
+- **Double Track 2.1.1:** its switches in the switch books (below).
 - **Realistic Firing, AI Engineer:** their apps (Firing, Engineers), and
   their own tablets retired.
+
+## Double Tracked Valley's switches
+
+With Double Track 2.1.1 in its Normal layout, the switch books show its
+switches:
+- the route map is re-laid to fit its passing loops and double track;
+- the station booklet's yard pages get its switches;
+- Steel Mill gets a page for its hump yard.
+
+The paper books show them, and so does the Switches app's map; with the
+Dispatcher license, press one to throw it. These maps are for Double
+Tracked Valley. They will be removed if Double Track's author asks, or once
+Double Track draws them itself. With another layout or version of Double
+Track, the books stay as the game makes them.
 
 ## Multiplayer
 

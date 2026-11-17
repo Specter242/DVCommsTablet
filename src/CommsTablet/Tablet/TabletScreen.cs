@@ -131,6 +131,8 @@ namespace CommsTablet.Tablet
                 radio = gadget.GadgetItem.GetComponent<TabletRadio>();
             if (radio != null && !Mounted)
                 radio.HeldChanged += HeldChanged;
+            if (radio != null)
+                radio.GuestCarChosen += GuestCarChosen;
             transparency = GetComponent<DV.Items.ItemTransparencyHandler>();
             shell = GetComponentsInChildren<MeshRenderer>(true).FirstOrDefault(r => r.name == "[comms tablet shell]");
             SideViews.Drawn += ViewDrawn;
@@ -677,6 +679,10 @@ namespace CommsTablet.Tablet
             view.Id = id;
             views.Add(view);
             guest.Held(id, !Mounted && radio.Held);
+            // A car-first guest hears the car its mode has already chosen (guest contract 2).
+            var chosen = radio.GuestCar(guest)?.Car;
+            if (chosen != null)
+                guest.Chosen(id, chosen);
             return view;
         }
 
@@ -728,6 +734,17 @@ namespace CommsTablet.Tablet
         {
             foreach (var view in views.ToList())
                 view.Guest.Held(view.Id, held);
+        }
+
+        /// <summary>A car-first guest's mode chose a car, or let it go: each of its views here is told, and redrawn.</summary>
+        private void GuestCarChosen(GuestApp guest, TrainCar car)
+        {
+            foreach (var view in views.ToList())
+                if (view.Guest == guest)
+                {
+                    guest.Chosen(view.Id, car);
+                    Redraw(view);
+                }
         }
 
         /// <summary>The item's use, while a guest's app is shown here: whether the guest took it.</summary>
@@ -1251,7 +1268,10 @@ namespace CommsTablet.Tablet
         {
             SideViews.Drawn -= ViewDrawn;
             if (radio != null)
+            {
                 radio.HeldChanged -= HeldChanged;
+                radio.GuestCarChosen -= GuestCarChosen;
+            }
             ReleaseTexture();
             ReleaseCanvas();
             if (screenMaterial != null) Object.Destroy(screenMaterial);

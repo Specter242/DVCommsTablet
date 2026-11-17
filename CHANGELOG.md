@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.3 (2026-11-17)
+
+- **Double Tracked Valley's switches in the switch books.** With Double
+  Track 2.1.1 in its Normal layout, the route map is re-laid to fit its
+  passing loops and double track, the station booklet's yard pages get its
+  switches, and Steel Mill gets a page for its hump yard. The paper books
+  show them, and so does the Switches app's map; with the Dispatcher
+  license, press one to throw it. These maps are for Double Tracked Valley:
+  they will be removed if its author asks, or once Double Track draws them
+  itself. When Double Track or the standalone Double Track Maps already
+  draws them, the tablet leaves the books to it.
+- **Switches, Map:** on a route map another mod re-lays (Double Track's),
+  a press lands on the switch drawn there.
+- **For other mods' authors:** an app on the tablet can now aim at a car
+  the way Paint does (guest contract 2, in `GUEST-APPS.md`). If DV Car
+  Changer adds an app of its own, the Workshop's Change page steps aside
+  for it.
+
 ## 0.1.2 (2026-11-17)
 
 - **Workshop: Change**, for DV Car Changer 1.5.4. Aim at a car and use

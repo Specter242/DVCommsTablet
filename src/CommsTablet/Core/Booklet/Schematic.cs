@@ -81,8 +81,10 @@ namespace CommsTablet.Core.Booklet
     public sealed class SchematicSource
     {
         public SchematicSource(string name, string station, string stationName, string yard, string title, string color, bool isRoute,
-                               IReadOnlyList<SchematicTile> tiles, IReadOnlyList<SchematicBadge> badges, IReadOnlyList<SchematicSwitch> switches)
+                               IReadOnlyList<SchematicTile> tiles, IReadOnlyList<SchematicBadge> badges, IReadOnlyList<SchematicSwitch> switches,
+                               double cell = 50)
         {
+            Cell = cell > 0 ? cell : 50;
             Name = name;
             Station = station;
             StationName = stationName;
@@ -117,6 +119,9 @@ namespace CommsTablet.Core.Booklet
         public IReadOnlyList<SchematicTile> Tiles { get; }
         public IReadOnlyList<SchematicBadge> Badges { get; }
         public IReadOnlyList<SchematicSwitch> Switches { get; }
+
+        /// <summary>A cell's side in the schematic's units: 50 on the game's pages, 40 on Double Track's re-laid route map.</summary>
+        public double Cell { get; }
 
         public override string ToString() => Name;
     }
@@ -309,7 +314,8 @@ namespace CommsTablet.Core.Booklet
 
     /// <summary>
     /// A page's schematic read as track: its switches, and the runs of track
-    /// between them. The game draws a page from 50-unit tiles; each track
+    /// between them. The game draws a page from 50-unit tiles (Double Track's
+    /// re-laid route map from 40-unit ones: <see cref="SchematicSource.Cell"/>); each track
     /// tile joins the middles of its cell's edges (a straight: bottom to top;
     /// a diagonal: bottom to right; a switch: points at the bottom, through
     /// to the top, diverging to one side), turned by its rotation. A badge or
@@ -318,7 +324,6 @@ namespace CommsTablet.Core.Booklet
     /// </summary>
     public sealed class Schematic
     {
-        private const double Half = 25;
 
         /// <summary>How far a switch's dot stands from its cell's middle toward its points' edge, as a share of the way (measured on the game's own drawing).</summary>
         private const double DotToward = 0.6;
@@ -537,6 +542,7 @@ namespace CommsTablet.Core.Booklet
         /// </summary>
         private static void AddBridges(SchematicSource source, List<Piece> pieces, Dictionary<(long, long), List<(int Piece, int Dir)>> at)
         {
+            var half = source.Cell / 2;
             var cells = new Dictionary<(long, long), SchematicBadge>();
             var taken = new HashSet<(long, long)>(pieces.Select(p => Key(new MapPoint(p.X, p.Y))));
             foreach (var b in source.Badges)
@@ -547,7 +553,7 @@ namespace CommsTablet.Core.Booklet
             }
             foreach (var t in source.Tiles)
             {
-                if (Shapes.ContainsKey(t.Sprite) || Decoration.Contains(t.Sprite) || Math.Abs(Math.Abs(t.Width) - 2 * Half) > 1)
+                if (Shapes.ContainsKey(t.Sprite) || Decoration.Contains(t.Sprite) || Math.Abs(Math.Abs(t.Width) - 2 * half) > 1)
                     continue;
                 var k = Key(new MapPoint(t.X, t.Y));
                 if (!taken.Contains(k) && !cells.ContainsKey(k))
@@ -560,9 +566,9 @@ namespace CommsTablet.Core.Booklet
             {
                 for (var i = 0; i < 64; i++)
                 {
-                    if (Dangling(Step(cell, d, Half)))
+                    if (Dangling(Step(cell, d, half)))
                         return true;
-                    cell = Step(cell, d, 2 * Half);
+                    cell = Step(cell, d, 2 * half);
                     if (!cells.ContainsKey(cell))
                         return false;
                 }
@@ -576,7 +582,7 @@ namespace CommsTablet.Core.Booklet
                     links.Add((E, W));
                 if (Reaches(c, N) && Reaches(c, S))
                     links.Add((N, S));
-                var direct = Enumerable.Range(0, 4).Where(d => Dangling(Step(c, d, Half))).ToArray();
+                var direct = Enumerable.Range(0, 4).Where(d => Dangling(Step(c, d, half))).ToArray();
                 var kind = PieceKind.Pass;
                 if (links.Count == 0 && direct.Length == 2)
                     links.Add((direct[0], direct[1]));
@@ -592,7 +598,7 @@ namespace CommsTablet.Core.Booklet
                     Ends = kind == PieceKind.BadgeEnd ? new[] { live[0] } : links.SelectMany(l => new[] { l.Item1, l.Item2 }).ToArray(),
                 };
                 for (var d = 0; d < 4; d++)
-                    p.EndPoints[d] = new MapPoint(c.Item1 + Dirs[d].X * Half, c.Item2 + Dirs[d].Y * Half);
+                    p.EndPoints[d] = new MapPoint(c.Item1 + Dirs[d].X * half, c.Item2 + Dirs[d].Y * half);
                 pieces.Add(p);
             }
         }

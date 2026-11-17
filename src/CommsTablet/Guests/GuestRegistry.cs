@@ -134,12 +134,19 @@ namespace CommsTablet.Guests
         private Action<int, Vector2> pressAt;
         private Func<int, bool> use;
         private Func<int, bool, bool> scroll;
+        // Contract 2: a car-first app (TabletGuestCarMode).
+        private Func<TrainCar, bool> fits;
+        private Action<int, TrainCar> chosen;
+        private Func<Color> beamColor;
 
         private Texture2D iconTexture;
         private bool iconAsked;
 
         /// <summary>The guest threw: its app is hidden for the session and its views are closed.</summary>
         internal bool Failed { get; private set; }
+
+        /// <summary>Whether the app works car first (contract 2's Fits and Chosen): the tablet aims, highlights, and chooses the car for it.</summary>
+        internal bool CarFirst => fits != null;
 
 #if !PUBLIC_RELEASE
         /// <summary>The call that threw, for the self-test.</summary>
@@ -189,6 +196,19 @@ namespace CommsTablet.Guests
             guest.pressAt = Method<Action<int, Vector2>>(type, "PressAt", true, problems);
             guest.use = Method<Func<int, bool>>(type, "Use", false, problems);
             guest.scroll = Method<Func<int, bool, bool>>(type, "Scroll", false, problems);
+            // Contract 2's car-first members, only for a guest written for it: Fits and Chosen together, BeamColor optional.
+            if (contract >= 2)
+            {
+                guest.fits = Method<Func<TrainCar, bool>>(type, "Fits", false, problems);
+                guest.chosen = Method<Action<int, TrainCar>>(type, "Chosen", false, problems);
+                guest.beamColor = Method<Func<Color>>(type, "BeamColor", false, problems);
+                var hasFits = type.GetMethods(BindingFlags.Public | BindingFlags.Static).Any(m => m.Name == "Fits");
+                var hasChosen = type.GetMethods(BindingFlags.Public | BindingFlags.Static).Any(m => m.Name == "Chosen");
+                if (hasFits != hasChosen)
+                    problems.Add("a car-first app needs both Fits and Chosen");
+                if (guest.beamColor != null && !hasFits)
+                    problems.Add("BeamColor is for a car-first app (Fits and Chosen)");
+            }
             if (problems.Count > 0)
             {
                 why = string.Join("; ", problems);
@@ -422,6 +442,53 @@ namespace CommsTablet.Guests
             {
                 Fail(nameof(Use), e);
                 return false;
+            }
+        }
+
+        /// <summary>Whether a car aimed at can be chosen for the app; false if it is not car first, or threw.</summary>
+        internal bool Fits(TrainCar car)
+        {
+            if (Failed || fits == null || car == null)
+                return false;
+            try
+            {
+                return fits(car);
+            }
+            catch (Exception e)
+            {
+                Fail(nameof(Fits), e);
+                return false;
+            }
+        }
+
+        /// <summary>Tells a view the car the tablet chose for it; null when it let the car go.</summary>
+        internal void Chosen(int view, TrainCar car)
+        {
+            if (Failed || chosen == null)
+                return;
+            try
+            {
+                chosen(view, car);
+            }
+            catch (Exception e)
+            {
+                Fail(nameof(Chosen), e);
+            }
+        }
+
+        /// <summary>The beam's color while the app aims; null to take the tablet's.</summary>
+        internal Color? BeamColor()
+        {
+            if (Failed || beamColor == null)
+                return null;
+            try
+            {
+                return beamColor();
+            }
+            catch (Exception e)
+            {
+                Fail(nameof(BeamColor), e);
+                return null;
             }
         }
 

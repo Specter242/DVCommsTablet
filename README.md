@@ -28,8 +28,9 @@ the game is not in the default Steam folder on Linux.
   targets, and its links to Multiplayer, Custom Car Loader, and Realistic
   Firing when those are installed. `PUBLIC_RELEASE=1 scripts/check.sh`
   checks the public build. `scripts/fetch-check-mods.sh` puts DV Car
-  Changer 1.5.4's assemblies (its GitHub release, SHA-256 pinned) in
-  `.deps/`, and the check then holds the Change page to that version;
+  Changer 1.5.4's and Double Track 2.1.1's assemblies (their GitHub
+  releases, SHA-256 pinned) in `.deps/`, and the check then holds the
+  Change page and the Double Track maps to those versions;
   `scripts/package.sh` always fetches them.
 - `scripts/package.sh` builds the public release zip in `dist/`.
 
@@ -41,7 +42,7 @@ public release (`-p:PublicRelease=true`) leaves out its hooks.
 Other mods can put an app on the tablet's home screen: publish a static
 class named `<YourAssembly>.CommsTabletApp`, and the tablet finds it and
 binds its members by reflection, with no reference to `CommsTablet.dll`.
-The full contract (version 1), with its members, when each is called, the
+The full contract (version 2), with its members, when each is called, the
 screen, the buttons, versioning, and Realistic Firing's and AI Engineer's
 working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
 `src/CommsTablet/Guests/` is the host side.
@@ -50,6 +51,12 @@ working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
 
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
+
+**0.1.3**: Double Tracked Valley's switches in the switch books (the
+route map re-laid, the booklet's yard pages and a hump yard page), for
+Double Track 2.1.1 until it draws them itself or its author asks them
+removed; the map's switches on another grid; guest contract 2, for apps
+that aim at a car.
 
 **0.1.2**: the Workshop's Change page for DV Car Changer 1.5.4: switch a
 car's modifications on and off.

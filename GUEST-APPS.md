@@ -9,8 +9,10 @@ Your mod does not reference `CommsTablet.dll`. You publish one static class
 with a fixed name, and the tablet finds it by reflection and binds its members.
 Without the Comms Tablet installed, your mod runs as it does now.
 
-This is guest contract **version 1**. Two published mods implement it, and both
-are worth reading next to this guide:
+This is guest contract **version 2** (Comms Tablet 0.1.3 and newer). Version 2
+adds car-first apps (see "Car-first apps"); an app written for version 1 still
+binds, unchanged. Two published mods implement version 1, and both are worth
+reading next to this guide:
 
 - Realistic Firing:
   [`CommsTabletApp.cs`](https://github.com/Specter242/DVRealisticFiring/blob/main/src/RealisticFiring/CommsTabletApp.cs)
@@ -37,7 +39,8 @@ The host side is in this repository under `src/CommsTablet/Guests/`.
 - Each member is bound once with `Delegate.CreateDelegate`. A missing member or
   a wrong signature fails at binding, once, with a log line that names it. It
   never fails in the middle of a frame.
-- Only base library and UnityEngine types cross between the two mods.
+- Only base library and UnityEngine types cross between the two mods, and,
+  for a car-first app, the game's own `TrainCar`.
   - **Never reference `CommsTablet.dll`.**
   - Don't share an assembly with it: two versions of a shared assembly would
     collide in Mono.
@@ -79,6 +82,9 @@ namespace YourMod   // your assembly's simple name
 }
 ```
 
+An app written for version 1 declares `Contract = 1`. A car-first app declares
+`Contract = 2` and adds the members in "Car-first apps".
+
 The constants may also be `static readonly` fields of the same types. Overloads
 with other signatures are ignored. If no overload of a required member binds,
 the app is refused.
@@ -102,6 +108,51 @@ the app is refused.
 | `PressAt(view, canvas)` | on a press inside `PressArea` | Receives the canvas point that was pressed. The tablet then calls `Draw` and renders. |
 | `Use(view)` | optional: the item's use, while the app is shown on the held tablet | Returns true if it took the use (the tablet redraws). |
 | `Scroll(view, forward)` | optional: the scroll wheel (in VR, the stick), while the app is shown on the held tablet | Returns true if it took it (the tablet redraws). |
+
+## Car-first apps (contract 2)
+
+An app that works on a car the player points at (its paint, its parts, its
+settings) can let the tablet do the aiming, as the tablet's own Paint, Wheels,
+and Change pages do. Declare `Contract = 2` and add:
+
+```csharp
+        public const int Contract = 2;
+
+        // Optional, together: a car-first app.
+        public static bool Fits(TrainCar car);
+        public static void Chosen(int view, TrainCar car);
+
+        // Optional, with them.
+        public static Color BeamColor();
+```
+
+| Member | When the tablet calls it | What your app does |
+| --- | --- | --- |
+| `Fits(car)` | each frame while the app is shown on the held tablet, for the car it is aimed at | Returns whether the app works on that car. A car it doesn't take is not pointed at. Keep it cheap. |
+| `Chosen(view, car)` | when a car is chosen; when it is let go (`null`); right after `Open` if one is already chosen | Shows what can be done to the car, and calls `invalidate`. |
+| `BeamColor()` | as the app is shown on the held tablet | Returns the color of the tablet's beam. Leave it out for white. |
+
+- **Aiming.** The tablet's beam aims from the held tablet. A car that fits is
+  outlined in green. Using the tablet at it chooses it: it is outlined in amber,
+  and every view of your app is told `Chosen(view, car)`.
+- **Using it again.** At the chosen car, the use goes to your `Use(view)`:
+  apply what the player last stepped to, as a radio's confirm. At another car
+  that fits, the use chooses that car. At nothing, it lets the car go
+  (`Chosen(view, null)`).
+- **The scroll wheel** goes to your `Scroll`, as for any app.
+- **Letting go.** The car is let go when the tablet is put away or mounted, or
+  another app opens. Taken up again within 100 m of the car it had, the tablet
+  chooses it again. Opening your app from Paint, Wheels, or Change keeps their
+  car if it fits.
+- **Presses on the screen** act without aiming. Check yourself that the player
+  is near enough to the car (the radio reaches 100 m).
+- `TrainCar` is the game's own type, which both mods already reference, so it
+  can't collide.
+- An app written for contract 1 is never car first, even with these members.
+  `Fits` and `Chosen` go together; an app with one and not the other, or with
+  `BeamColor` alone, is refused.
+- A Comms Tablet older than 0.1.3 takes only contract 1, so it hides a
+  contract-2 app with one log line.
 
 ## The screen
 
@@ -206,7 +257,8 @@ signature, or a taken `Id`.
 ## Versioning
 
 - `CommsTablet.GuestContract` (public, in `CommsTablet.dll`) has
-  `const int Min = 1, Max = 1` and `static bool Merged(string id)`.
+  `const int Min = 1, Max = 2` and `static bool Merged(string id)`.
+  - Version 2 (Comms Tablet 0.1.3) added the optional car-first members.
 - `GuestContract.Merged(Id)` is true when all three hold: the Comms Tablet
   loaded, it can build its tablet, and it bound your app. It stays true for the
   rest of the session, even if your app later throws.
@@ -289,7 +341,9 @@ then gives yours again, because you cleared the flag.
 ## Checklist
 
 - The class is `<YourAssembly>.CommsTabletApp`, public and static.
-- `Contract` is 1. `Id` is unique and stable, and `Name` is short.
+- `Contract` is 1, or 2 for a car-first app. `Id` is unique and stable, and
+  `Name` is short.
+- A car-first app has both `Fits` and `Chosen`, and checks the reach on a press.
 - No reference to `CommsTablet.dll`, and no shared assembly.
 - Everything under `region` is on layer 30, with `raycastTarget` off.
 - Slots are placed in `Draw`, the same slot for the same plate.

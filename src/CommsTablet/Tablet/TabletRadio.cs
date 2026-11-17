@@ -63,6 +63,14 @@ namespace CommsTablet.Tablet
         /// <summary>Raised when the tablet is taken in hand (true) or let go, stashed, or mounted (false): for the guests' views.</summary>
         internal event Action<bool> HeldChanged;
 
+        /// <summary>Raised when a car-first guest's mode chooses a car (or lets it go: null), for the screens to tell its views (guest contract 2).</summary>
+        internal event Action<GuestApp, TrainCar> GuestCarChosen;
+
+        private readonly Dictionary<GuestApp, TabletGuestCarMode> guestModes = new Dictionary<GuestApp, TabletGuestCarMode>();
+
+        /// <summary>A car-first guest's mode on this tablet; null for another guest.</summary>
+        internal TabletGuestCarMode GuestCar(GuestApp guest) => guest != null && guestModes.TryGetValue(guest, out var mode) ? mode : null;
+
         /// <summary>The stock gadget item that mounts the tablet.</summary>
         internal GadgetItem Gadget { get; private set; }
 
@@ -128,11 +136,14 @@ namespace CommsTablet.Tablet
             // Not on the mount: the light is the item's, put away there.
             Apps.Add(new TabletApp("Light", "UI_Light", "light", ToggleLight, () => LightOn,
                 () => Light != null && Light.light != null && isActiveAndEnabled && Radios.Allow(r => r.commsRadioLight)));
+            var carFirst = GetComponentsInChildren<TabletGuestCarMode>(true).FirstOrDefault(m => m.Guest == null && !m.gameObject.activeSelf);
             foreach (var guest in GuestRegistry.All)
             {
-                var page = new GuestPage(this, guest);
+                var page = new GuestPage(this, guest, guest.CarFirst ? GuestMode(carFirst, guest) : null);
                 Pages.Add(page);
                 Apps.Add(new TabletApp(page));
+                if (guest.CarFirst && page.CarMode == null)
+                    Main.Mod?.Logger.Warning($"Guest app '{guest.Name}' works car first, but this tablet has no car mode to copy for it; it opens without aiming");
             }
             var settings = new SettingsPage(this);
             Pages.Add(settings);
@@ -149,6 +160,22 @@ namespace CommsTablet.Tablet
                 workTrains = WorkTrains.Follow(WorkTrainBought);
             }
             HideRadioFace();
+        }
+
+        /// <summary>A car-first guest's own mode: a copy of the tablet's inactive GuestCarController, its use at the chosen car going to the guest's view.</summary>
+        private TabletGuestCarMode GuestMode(TabletGuestCarMode prototype, GuestApp guest)
+        {
+            if (prototype == null)
+                return null;
+            var copy = Instantiate(prototype.gameObject, prototype.transform.parent, false);
+            copy.name = "GuestCarController " + guest.Id;
+            var mode = copy.GetComponent<TabletGuestCarMode>();
+            mode.Guest = guest;
+            mode.Told += (g, car) => GuestCarChosen?.Invoke(g, car);
+            mode.CarChanged += Changed;
+            copy.SetActive(true);
+            guestModes[guest] = mode;
+            return mode;
         }
 
         // A work train bought at the radio joins the radio's summon list
@@ -317,7 +344,13 @@ namespace CommsTablet.Tablet
             var page = Current;
             if (page is GuestPage guest)
             {
-                if (screen != null && screen.GuestUse(guest))
+                // A car-first guest's mode chooses the car, and at the chosen car hands the use to the guest (TabletGuestCarMode.UseAtCar).
+                if (guest.CarMode != null)
+                {
+                    guest.CarMode.OnUse();
+                    Changed();
+                }
+                else if (screen != null && screen.GuestUse(guest))
                     Changed();
                 return;
             }
@@ -329,6 +362,9 @@ namespace CommsTablet.Tablet
         }
 
         private void Changed() => Version++;
+
+        /// <summary>The use at a car-first guest's chosen car: to the guest's view shown on the tablet in hand; whether it took it.</summary>
+        internal bool UseGuest(GuestPage page) => screen != null && screen.GuestUse(page);
 
         // Aimed at a free mount, the wheel picks how the tablet sits on it (the gadget item's own handler).
         private void OnScrolled(ScrollAction direction)

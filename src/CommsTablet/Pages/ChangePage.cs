@@ -28,9 +28,15 @@ namespace CommsTablet.Pages
         private TabletChangeMode Change => Radio.Change;
 
         internal override bool Available =>
-            Radio.Change != null && !Session.IsMultiplayerClient && CarChangerLink.Present
+            Radio.Change != null && !Session.IsMultiplayerClient && !CarChangerOwnApp && CarChangerLink.Present
             && Radios.Allow(r => (GameMembers.RadioModes?.Invoke(r) ?? new List<ICommsRadioMode>())
                 .FirstOrDefault(m => m != null && m.GetType() == CarChangerLink.RadioMode));
+
+ internal static bool CarChangerOwnApp => StepsAsideFor(Guests.GuestRegistry.All);
+
+        /// <summary>Whether, among <paramref name="guests"/>, Car Changer's own app is bound and working.</summary>
+        internal static bool StepsAsideFor(IEnumerable<Guests.GuestApp> guests) =>
+            guests.Any(g => g.Assembly == CarChangerLink.GameAssembly && !g.Failed);
 
         internal override string Hint => Change?.Car == null ? null
             : Change.Reason ?? (Session.IsMultiplayerHost ? "Car Changer's changes show for you only" : "Press a change to switch it on or off");

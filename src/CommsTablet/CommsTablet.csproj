@@ -29,6 +29,8 @@
     <Reference Include="DV.Preferences" HintPath="$(DvManagedDir)/DV.Preferences.dll" Private="false" />
     <Reference Include="DV.UI" HintPath="$(DvManagedDir)/DV.UI.dll" Private="false" />
     <Reference Include="DV.UserManagement" HintPath="$(DvManagedDir)/DV.UserManagement.dll" Private="false" />
+    <Reference Include="I2.Localization" HintPath="$(DvManagedDir)/I2.Localization.dll" Private="false" />
+    <Reference Include="Newtonsoft.Json" HintPath="$(DvManagedDir)/Newtonsoft.Json.dll" Private="false" />
     <Reference Include="net.smkd.vector3d" HintPath="$(DvManagedDir)/net.smkd.vector3d.dll" Private="false" />
     <Reference Include="Unity.TextMeshPro" HintPath="$(DvManagedDir)/Unity.TextMeshPro.dll" Private="false" />
     <Reference Include="UnityEngine" HintPath="$(DvManagedDir)/UnityEngine.dll" Private="false" />
@@ -47,6 +49,12 @@
 
   <ItemGroup>
     <None Include="Info.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Double Track's switch maps (Books/DoubleTrackBooks.cs), kept in the assembly. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Books/routemap-normal.json" LogicalName="CommsTablet.Books.routemap-normal.json" />
+    <EmbeddedResource Include="Books/booklet-normal.json" LogicalName="CommsTablet.Books.booklet-normal.json" />
   </ItemGroup>
 
 </Project>

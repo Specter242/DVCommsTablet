@@ -282,6 +282,20 @@ namespace CommsTablet.Tablet
             change.cancelSound = stock.cancelSound;
             if (stock.trainHighlighter != null)
                 change.trainHighlighter = Object.Instantiate(stock.trainHighlighter, changer.transform, false);
+
+            // Car-first guest apps (guest contract 2): kept inactive, copied for each such guest as the tablet builds its apps (TabletRadio).
+            var guests = new GameObject("GuestCarController");
+            guests.SetActive(false);
+            guests.transform.SetParent(stock.transform.parent, false);
+            var guest = guests.AddComponent<TabletGuestCarMode>();
+            guest.signalOrigin = stock.signalOrigin;
+            guest.display = stock.display;
+            guest.validMaterial = stock.validMaterial;
+            guest.hoverOverCar = stock.hoverOverCar;
+            guest.confirmSound = stock.confirmSound;
+            guest.cancelSound = stock.cancelSound;
+            if (stock.trainHighlighter != null)
+                guest.trainHighlighter = Object.Instantiate(stock.trainHighlighter, guests.transform, false);
             Object.DestroyImmediate(stock);
         }
 

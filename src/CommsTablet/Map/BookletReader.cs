@@ -35,7 +35,8 @@ namespace CommsTablet.Map
     /// </summary>
     internal static class BookletReader
     {
-        private const float Cell = 50f;
+        /// <summary>The game's tiles and touch cells as it draws its books: 50 units on the page.</summary>
+        internal const float StockCell = 50f;
 
         private static readonly Regex PageName = new Regex(@"^\[(\w+)-(\w+)\]$", RegexOptions.CultureInvariant);
 
@@ -136,6 +137,7 @@ namespace CommsTablet.Map
                 return null;
             }
             var grid = data.GetMapGridSize(DV.Items.JunctionMap.JunctionMapType.Station);
+            var area = TouchArea(data.junctionStationGridSize, grid);
             for (var i = 0; i < book.staticPages.Count; i++)
             {
                 var page = book.staticPages[i];
@@ -145,7 +147,7 @@ namespace CommsTablet.Map
                 var roots = page.GetComponentsInChildren<RectTransform>(true).Where(t => t.name == "SMap" && ActiveUnder(t, page.transform)).ToList();
                 if (roots.Count == 0)
                     continue;
-                var src = ReadPage(network, page.transform, roots, stationPages[i], grid, false);
+                var src = ReadPage(network, page.transform, roots, stationPages[i], grid, area, false);
                 if (src != null)
                     result.Add(src);
             }
@@ -156,7 +158,9 @@ namespace CommsTablet.Map
                 var root = page.GetComponentsInChildren<RectTransform>(true).FirstOrDefault(t => t.name == "OuterWrapper");
                 if (root != null)
                 {
-                    var src = ReadPage(network, page.transform, new List<RectTransform> { root }, worldPages[0], data.GetMapGridSize(DV.Items.JunctionMap.JunctionMapType.World), true);
+                    var worldGrid = data.GetMapGridSize(DV.Items.JunctionMap.JunctionMapType.World);
+                    var src = ReadPage(network, page.transform, new List<RectTransform> { root }, worldPages[0], worldGrid,
+                                       TouchArea(data.junctionWorldGridSize, worldGrid), true);
                     if (src != null)
                         result.Add(src);
                 }
@@ -204,7 +208,30 @@ namespace CommsTablet.Map
             return t != null ? t.text.Trim() : null;
         }
 
-        private static SchematicSource ReadPage(TrackNetwork network, Transform page, List<RectTransform> roots, JunctionGeneratedDataRuntime.JunctionPageData cells, Vector2Int grid, bool isRoute)
+        /// <summary>
+        /// The touch area on the page, in its units: the game's own grid (the
+        /// level's data, which no mod patches) at 50 units a cell. The touch
+        /// screen is the item's, so its size stays when a mod changes the grid
+        /// (<c>GetMapGridSize</c>): the game then divides the same area by the
+        /// new grid (<c>TouchscreenBase</c>), and a cell is no longer 50 units.
+        /// Double Track's re-laid route map is 40 x 40 cells of 1600 / 40 = 40.
+        /// A grid the data lacks is taken as the patched one.
+        /// </summary>
+        internal static Vector2 TouchArea(Vector2Int stockGrid, Vector2Int grid)
+        {
+            var g = stockGrid.x > 0 && stockGrid.y > 0 ? stockGrid : grid;
+            return new Vector2(g.x * StockCell, g.y * StockCell);
+        }
+
+        /// <summary>The middle of a touch cell on the page's canvas, from its bottom left: the area centred on the canvas and divided by the grid, as the game's touch screen divides it.</summary>
+        internal static Vector2 CellMiddle(Vector2 canvas, Vector2 area, Vector2Int grid, Vector2Int coord)
+        {
+            float w = area.x / Mathf.Max(1, grid.x), h = area.y / Mathf.Max(1, grid.y);
+            return new Vector2((canvas.x - area.x) / 2 + (coord.x + 0.5f) * w, (canvas.y - area.y) / 2 + (coord.y + 0.5f) * h);
+        }
+
+        private static SchematicSource ReadPage(TrackNetwork network, Transform page, List<RectTransform> roots, JunctionGeneratedDataRuntime.JunctionPageData cells,
+                                                Vector2Int grid, Vector2 area, bool isRoute)
         {
             var schematic = roots[0];
             var tiles = new List<SchematicTile>();
@@ -227,10 +254,9 @@ namespace CommsTablet.Map
                     tiles.Add(new SchematicTile(image.sprite.name, at.x, at.y, turn, rt.rect.width * scale.x, rt.rect.height * scale.y));
                 }
             }
-            // Each touch cell's middle on the page, then on the schematic: the page's canvas holds the grid, centred.
+            // Each touch cell's middle on the page, then on the schematic: the page's canvas holds the touch area, centred.
             var canvas = page.GetComponentsInChildren<RectTransform>(true).FirstOrDefault(t => t.name == "Template Canvas") ?? (RectTransform)page;
             var size = canvas.rect.size;
-            float left = (size.x - grid.x * Cell) / 2, bottom = (size.y - grid.y * Cell) / 2;
             var switches = new List<SchematicSwitch>();
             var ordered = RailTrackRegistryBase.Junctions;
             foreach (var c in cells.junctionDataCoords ?? new List<JunctionGeneratedDataRuntime.DataCoord>())
@@ -241,19 +267,22 @@ namespace CommsTablet.Map
                 var index = c.data.junctionIndex;
                 if (index < 0 || index >= ordered.Length || ordered[index] == null || !network.TryGetJunction(ordered[index], out var j))
                     continue;
-                var onCanvas = new Vector3(left + (c.coord.x + 0.5f) * Cell - size.x / 2, bottom + (c.coord.y + 0.5f) * Cell - size.y / 2, 0);
+                var middle = CellMiddle(size, area, grid, c.coord);
+                var onCanvas = new Vector3(middle.x - size.x / 2, middle.y - size.y / 2, 0);
                 // The canvas's own pivot is its middle on the game's pages; allow for one that isn't.
                 onCanvas += new Vector3((0.5f - canvas.pivot.x) * size.x, (0.5f - canvas.pivot.y) * size.y, 0);
                 var at = schematic.InverseTransformPoint(canvas.TransformPoint(onCanvas));
                 switches.Add(new SchematicSwitch(at.x, at.y, j));
             }
+            // The schematic's cell, as the touch cell: the tiles are drawn to it (50, or 40 on Double Track's re-laid route map).
+            var cell = area.x / Mathf.Max(1, grid.x);
             if (isRoute)
-                return new SchematicSource("[Route]", null, null, null, "ROUTE MAP", null, true, tiles, badges, switches);
+                return new SchematicSource("[Route]", null, null, null, "ROUTE MAP", null, true, tiles, badges, switches, cell);
             var color = page.GetComponentsInChildren<Image>(true).FirstOrDefault(x => x.gameObject.name == "StationBg");
             var code = TextOf(page, "Text-StationID");
             var m = PageName.Match(page.gameObject.name);
             return new SchematicSource(page.gameObject.name, code ?? m.Groups[1].Value, TextOf(page, "Text-StationName"), TextOf(page, "Text-YardID") ?? m.Groups[2].Value,
-                                       TextOf(page, "Text-YardType"), color != null ? "#" + ColorUtility.ToHtmlStringRGBA(color.color) : null, false, tiles, badges, switches);
+                                       TextOf(page, "Text-YardType"), color != null ? "#" + ColorUtility.ToHtmlStringRGBA(color.color) : null, false, tiles, badges, switches, cell);
         }
 
         private static bool InBadge(Transform t, Transform root)

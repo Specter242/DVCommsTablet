@@ -27,6 +27,7 @@
     <Reference Include="Assembly-CSharp" HintPath="$(DvManagedDir)/Assembly-CSharp.dll" />
     <Reference Include="DV.ThingTypes" HintPath="$(DvManagedDir)/DV.ThingTypes.dll" />
     <Reference Include="DV.Utils" HintPath="$(DvManagedDir)/DV.Utils.dll" />
+    <Reference Include="DV.RailTrack" HintPath="$(DvManagedDir)/DV.RailTrack.dll" />
     <Reference Include="UnityEngine" HintPath="$(DvManagedDir)/UnityEngine.dll" />
     <Reference Include="UnityEngine.CoreModule" HintPath="$(DvManagedDir)/UnityEngine.CoreModule.dll" />
     <Reference Include="UnityEngine.AudioModule" HintPath="$(DvManagedDir)/UnityEngine.AudioModule.dll" />

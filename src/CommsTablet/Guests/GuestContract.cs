@@ -5,8 +5,12 @@ namespace CommsTablet
         /// <summary>The oldest guest contract this tablet takes.</summary>
         public const int Min = 1;
 
-        /// <summary>The newest guest contract this tablet takes.</summary>
-        public const int Max = 1;
+        /// <summary>
+        /// The newest guest contract this tablet takes. Contract 2 (Comms
+        /// Tablet 0.1.3) adds the optional car-first members: <c>Fits</c>,
+        /// <c>Chosen</c>, and <c>BeamColor</c>.
+        /// </summary>
+        public const int Max = 2;
 
         /// <summary>
         /// Whether the tablet has bound the guest with this <c>Id</c>: its
