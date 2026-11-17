@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 (2026-11-17)
+
+- **Spawn and Paint pictures** now fit every engine to its tile. Some
+  custom engines came out tiny or too big and cut off; each picture is now
+  framed on the engine itself.
+- The pictures now show the doors, handles, and other outside parts.
+
 ## 0.1.0 (2026-11-17)
 
 First release: a held tablet that does the comms radio's work on a screen.

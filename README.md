@@ -48,4 +48,7 @@ working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
 
+**0.1.1**: Spawn and Paint pictures fit every engine to its tile, and show
+the doors and handles.
+
 **0.1.0**: the first release.

@@ -2,7 +2,7 @@
   "Id": "CommsTablet",
   "DisplayName": "Comms Tablet",
   "Author": "Specter242",
-  "Version": "0.1.0",
+  "Version": "0.1.1",
   "ManagerVersion": "0.28.2",
   "AssemblyName": "CommsTablet.dll",
   "EntryMethod": "CommsTablet.Main.Load",

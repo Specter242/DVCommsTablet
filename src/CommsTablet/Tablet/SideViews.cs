@@ -15,6 +15,9 @@ namespace CommsTablet.Tablet
         private const int Layer = 30;
         private static readonly Vector3 Stage = new Vector3(0f, -2000f, 0f);
 
+        /// <summary>How far past the car's box (at least) a part still counts as the car's: 3 m, or a quarter of its length.</summary>
+        private const float Reach = 3f;
+
         private static readonly Dictionary<(TrainCarLivery, PaintTheme), Sprite> views = new Dictionary<(TrainCarLivery, PaintTheme), Sprite>();
         private static readonly HashSet<(TrainCarLivery, PaintTheme)> failed = new HashSet<(TrainCarLivery, PaintTheme)>();
         private static readonly List<(TrainCarLivery livery, PaintTheme theme, TrainCar car)> wanted = new List<(TrainCarLivery, PaintTheme, TrainCar)>();
@@ -22,6 +25,12 @@ namespace CommsTablet.Tablet
         private static Camera camera;
         private static Light light;
         private static int frame = -1;
+
+#if !PUBLIC_RELEASE
+        /// <summary>For the self-test: each livery's car box and the frame drawn (stage coordinates), its parts copied, and how many were its exterior interactables'.</summary>
+        internal static readonly Dictionary<string, (Bounds Box, Bounds Frame, int Parts, int Interactables, Rect Seen)> FramedForTest =
+            new Dictionary<string, (Bounds, Bounds, int, int, Rect)>();
+#endif
 
         /// <summary>Raised when a view finishes, so a screen can redraw.</summary>
         internal static event Action Drawn;
@@ -86,12 +95,26 @@ namespace CommsTablet.Tablet
             var made = new List<Material>();
             try
             {
-                var bounds = Copy(prefab.transform, stage.transform);
-                if (!bounds.HasValue)
+                var parts = new List<Bounds>();
+                Copy(prefab.transform, stage.transform, parts);
+                // The doors and handles: the game loads them under the car's [interior], which it
+                // places at the car's own position and rotation (TrainCar.SetupInterior).
+                var interactables = 0;
+                var outside = livery.externalInteractablesPrefab;
+                if (outside != null)
+                {
+                    var holder = new GameObject("[exterior interactables]");
+                    holder.transform.SetParent(stage.transform, false);
+                    holder.transform.localPosition = outside.transform.localPosition;
+                    holder.transform.localRotation = outside.transform.localRotation;
+                    holder.transform.localScale = outside.transform.localScale;
+                    interactables = Copy(outside.transform, holder.transform, parts);
+                }
+                if (parts.Count == 0)
                     return null;
                 if (theme != null && !Paint(stage, theme, car, made))
                     return null;
-                var b = Frame(prefab, bounds.Value);
+                var b = Frame(prefab, parts, out var box);
                 // Looking at the vehicle's left side, its front to the left, as in the game's icons.
                 var aspect = (float)Width / Height;
                 camera.aspect = aspect;
@@ -102,10 +125,19 @@ namespace CommsTablet.Tablet
                 camera.farClipPlane = distance + b.extents.x + 1f;
                 // From the camera's side, above and a little ahead.
                 light.transform.rotation = Quaternion.LookRotation(new Vector3(0.6f, -0.5f, -0.35f), Vector3.up);
+                host.SetActive(true);
+                // The meshes' bounds take in what no picture shows (lamp beams, glass, helpers far
+                // above or below the body): framed again on the pixels the first look drew, then
+                // once more at about the picture's own scale, where thin edges (a wheel's rim, a
+                // step) the first, coarser look under-measured show (0.1.1's second test run).
+                var seen = Refit(aspect);
+                Refit(aspect);
+#if !PUBLIC_RELEASE
+                FramedForTest[livery.id] = (box, b, parts.Count, interactables, seen);
+#endif
 
                 target = RenderTexture.GetTemporary(Width, Height, 16, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default, 4);
                 camera.targetTexture = target;
-                host.SetActive(true);
                 camera.Render();
                 // Resolved into a plain texture before reading: reading an
                 // antialiased one directly is backend-dependent.
@@ -160,15 +192,16 @@ namespace CommsTablet.Tablet
         }
 
         /// <summary>
-        /// Copies the prefab's visible mesh renderers under <paramref name="stage"/>,
-        /// as meshes and materials only, and returns their combined bounds.
+        /// Copies a prefab's visible mesh renderers under <paramref name="stage"/>,
+        /// as meshes and materials only, adds each copy's bounds to
+        /// <paramref name="parts"/>, and returns how many it copied.
         /// </summary>
-        private static Bounds? Copy(Transform prefab, Transform stage)
+        private static int Copy(Transform prefab, Transform stage, List<Bounds> parts)
         {
             // Only the nearest level of detail: farther levels would draw over it.
             var farther = new HashSet<Renderer>(prefab.GetComponentsInChildren<LODGroup>(true)
                 .SelectMany(g => g.GetLODs().Skip(1)).SelectMany(l => l.renderers).Where(r => r != null));
-            Bounds? bounds = null;
+            var copied = 0;
             foreach (var source in prefab.GetComponentsInChildren<MeshRenderer>(true))
             {
                 if (!source.enabled || farther.Contains(source) || !ActiveInPrefab(source.transform, prefab))
@@ -186,42 +219,107 @@ namespace CommsTablet.Tablet
                 renderer.sharedMaterials = source.sharedMaterials;
                 renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 renderer.receiveShadows = false;
-                if (bounds.HasValue)
-                {
-                    var b = bounds.Value;
-                    b.Encapsulate(renderer.bounds);
-                    bounds = b;
-                }
-                else
-                    bounds = renderer.bounds;
+                parts.Add(renderer.bounds);
+                copied++;
             }
-            return bounds;
+            return copied;
         }
 
         /// <summary>
-        /// What the camera frames: the car's own box (its collision bounds and
-        /// couplers, as the spawner measures it) along its length, and the
-        /// meshes' height within a little of that box, so roof fittings show but
-        /// a stray part far off the body cannot shrink the view.
+        /// What the camera frames first: the model itself, so each vehicle fills its
+        /// tile. The parts that are the car's are those reaching into its box (its
+        /// collision bounds and couplers, as the spawner measures it) widened by
+        /// <see cref="Reach"/> or a quarter of its length, so a stray part far off
+        /// cannot shrink the view; the frame is those parts' box, cut to that
+        /// widened box. The car's box alone is not the frame: a Custom Car Loader
+        /// engine's box can be much longer than its body (a small engine drawn
+        /// small) or shorter (one drawn too big and cut off; 0.1.0).
         /// </summary>
-        private static Bounds Frame(GameObject prefab, Bounds meshes)
+        private static Bounds Frame(GameObject prefab, List<Bounds> parts, out Bounds box)
         {
+            var all = Union(parts);
+            box = all;
             var car = prefab.GetComponent<TrainCar>();
-            if (car == null)
-                return meshes;
-            var box = car.Bounds;
-            if (box.size.z <= 0f)
-                return meshes;
-            var center = Stage + box.center;
-            var bottom = Mathf.Max(meshes.min.y, center.y - box.extents.y - 1.5f);
-            var top = Mathf.Min(meshes.max.y, center.y + box.extents.y + 1.5f);
-            if (top <= bottom)
+            if (car == null || car.Bounds.size.z <= 0f)
+                return all;
+            box = new Bounds(Stage + car.Bounds.center, car.Bounds.size);
+            var near = box;
+            near.Expand(2f * Mathf.Max(Reach, box.size.z * 0.25f));
+            var picked = parts.Where(p => p.Intersects(near)).ToList();
+            if (picked.Count == 0)
+                return box;
+            var model = Union(picked);
+            var min = Vector3.Max(model.min, near.min);
+            var max = Vector3.Min(model.max, near.max);
+            if (max.x <= min.x || max.y <= min.y || max.z <= min.z)
+                return box;
+            var frame = new Bounds();
+            frame.SetMinMax(min, max);
+            return frame;
+        }
+
+        // A color no vehicle is painted in: what the first look sees is what is not it.
+        private static readonly Color Key = new Color(1f, 0f, 1f, 1f);
+
+        /// <summary>
+        /// Draws the camera's view once against <see cref="Key"/>, at twice the
+        /// picture's size, and frames the camera again on the drawn pixels, with
+        /// the same margin. Returns where they were, as a part of the first view
+        /// (0 to 1, from the bottom left); the whole view if none were drawn.
+        /// </summary>
+        private static Rect Refit(float aspect)
+        {
+            var background = camera.backgroundColor;
+            var look = RenderTexture.GetTemporary(Width * 2, Height * 2, 16, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default, 1);
+            var probe = new Texture2D(look.width, look.height, TextureFormat.RGBA32, false);
+            var previous = RenderTexture.active;
+            try
             {
-                bottom = center.y - box.extents.y;
-                top = center.y + box.extents.y;
+                camera.backgroundColor = Key;
+                camera.targetTexture = look;
+                camera.Render();
+                RenderTexture.active = look;
+                probe.ReadPixels(new Rect(0, 0, look.width, look.height), 0, 0, false);
+                int w = look.width, h = look.height;
+                var pixels = probe.GetPixels32();
+                int x0 = w, y0 = h, x1 = -1, y1 = -1;
+                for (var y = 0; y < h; y++)
+                    for (var x = 0; x < w; x++)
+                    {
+                        var c = pixels[y * w + x];
+                        if (255 - c.r + c.g + 255 - c.b < 48)
+                            continue;
+                        if (x < x0) x0 = x;
+                        if (x > x1) x1 = x;
+                        if (y < y0) y0 = y;
+                        if (y > y1) y1 = y;
+                    }
+                if (x1 < 0)
+                    return new Rect(0, 0, 1, 1);
+                var seen = Rect.MinMaxRect((float)x0 / w, (float)y0 / h, (x1 + 1f) / w, (y1 + 1f) / h);
+                var halfHeight = camera.orthographicSize;
+                var halfWidth = halfHeight * aspect;
+                var t = camera.transform;
+                t.position += t.right * ((seen.center.x - 0.5f) * 2f * halfWidth) + t.up * ((seen.center.y - 0.5f) * 2f * halfHeight);
+                camera.orthographicSize = Mathf.Max(seen.height * halfHeight, seen.width * halfWidth / aspect) * 1.06f;
+                return seen;
             }
-            return new Bounds(new Vector3(center.x, (bottom + top) * 0.5f, center.z),
-                new Vector3(box.size.x, top - bottom, box.size.z));
+            finally
+            {
+                camera.backgroundColor = background;
+                camera.targetTexture = null;
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(look);
+                Object.Destroy(probe);
+            }
+        }
+
+        private static Bounds Union(List<Bounds> parts)
+        {
+            var all = parts[0];
+            for (var i = 1; i < parts.Count; i++)
+                all.Encapsulate(parts[i]);
+            return all;
         }
 
         private static bool ActiveInPrefab(Transform t, Transform root)
