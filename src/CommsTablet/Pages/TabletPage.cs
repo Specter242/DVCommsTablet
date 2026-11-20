@@ -86,6 +86,9 @@ namespace CommsTablet.Pages
         /// <summary>A short message about the last choice, shown until the next one.</summary>
         internal string Notice;
 
+        /// <summary>When the radio turns to this page from another one.</summary>
+        internal virtual void Opened() { }
+
         /// <summary>A line under the grid about how the page works, if any.</summary>
         internal virtual string Hint => null;
 
@@ -136,6 +139,13 @@ namespace CommsTablet.Pages
 
         /// <summary>After the tablet is used (a click or trigger) on this page's mode.</summary>
         internal virtual void Used() { }
+
+        /// <summary>
+        /// Runs work a press queued on the last pass, called at the start of
+        /// the screen's update, outside the canvas pass (a one-time action
+        /// that gives an item); true if it ran, so the screen redraws next.
+        /// </summary>
+        internal virtual bool RunQueued() => false;
 
         /// <summary>Rebuilds <see cref="Tiles"/> from the mode's lists.</summary>
         internal abstract void Refresh();

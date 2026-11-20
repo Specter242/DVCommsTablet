@@ -21,8 +21,10 @@ namespace CommsTablet.Map
     /// locomotives on its world map, each loco on the page is drawn on its
     /// track with its number, as AI Engineer draws them. A press on a route map's station badge
     /// opens its overview, on an overview's capsule its yard; on a switch,
-    /// with the Dispatcher license, it throws it, as the game's touch maps do.
-    /// The page is drawn again when it, its view, a switch on it, or a loco
+    /// with the Dispatcher license, it throws it, as the game's touch maps do;
+    /// on a track, it picks that track, and the column's ROUTE sends Track Ahead
+    /// there. Opened from Track Ahead's SET DESTINATION, it is for picking, and
+    /// ROUTE or CANCEL goes back there. The page is drawn again when it, its view, a switch on it, or a loco
     /// on it changes, at most each refresh (twice a second) while it shows.
     ///
     /// AI Engineer's <c>TabletMap</c> (c6e6207,
@@ -43,6 +45,9 @@ namespace CommsTablet.Map
         private const int LetterRows = 3;
         private const float PressRadius = 22;
 
+        /// <summary>Where the column's ROUTE and CLEAR go, below its arrows (map pixels).</summary>
+        private const float PickY = 650;
+
         /// <summary>The screen's status strip covers the map's bottom 60 pixels (canvas 852 on), as AI Engineer's last-order strip does.</summary>
         private const float StripTop = MapH - 60;
 
@@ -61,6 +66,31 @@ namespace CommsTablet.Map
         private static bool dirty = true;
         private static string settingsDrawn;
         private static float shownAt = -1000;
+
+        /// <summary>The place pressed, waiting for ROUTE; null if none.</summary>
+        private static AheadGoal picked;
+
+        /// <summary>Opened from Track Ahead to pick its destination, and going back there after.</summary>
+        private static bool forAhead;
+
+        /// <summary>Set just before the radio turns to the map for Track Ahead, so that turn alone keeps <see cref="forAhead"/>.</summary>
+        private static bool arming;
+
+        /// <summary>Makes the map's next opening one for picking Track Ahead's destination.</summary>
+        internal static void PickForAhead()
+        {
+            forAhead = true;
+            arming = true;
+            picked = null;
+        }
+
+        /// <summary>When the radio turns to the map: any other way there than Track Ahead's is the map as usual.</summary>
+        internal static void Opened()
+        {
+            if (!arming)
+                forAhead = false;
+            arming = false;
+        }
 
         private static Rect S(float x, float y, float w, float h) => new Rect(MapX + x, MapY + y, w, h);
 
@@ -90,6 +120,9 @@ namespace CommsTablet.Map
             placed = false;
             tabSet = 0;
             settingsDrawn = null;
+            picked = null;
+            forAhead = false;
+            arming = false;
             PressArea = Rect.zero;
             locosUsed = 0;
             foreach (var c in locos)
@@ -124,6 +157,15 @@ namespace CommsTablet.Map
         internal static string StationShown => BookletReader.Read?.Page(at)?.Station;
 
         internal static int TabSetShown => tabSet;
+
+        internal static AheadGoal PickedForTest => picked;
+
+        internal static bool ForAheadForTest => forAhead;
+
+        internal static readonly Vector2 RoutePlateForTest = new Vector2(MapX + MapW - 16 - 64, MapY + PickY + 26);
+
+        /// <summary>CLEAR, or CANCEL when picking for Track Ahead: the same plate.</summary>
+        internal static readonly Vector2 ClearPlateForTest = new Vector2(MapX + MapW - 16 - 64, MapY + PickY + 84);
 
         internal static PageView ViewShown => view;
 
@@ -298,6 +340,7 @@ namespace CommsTablet.Map
         private static string SettingsOf(BookletPage page, TrackNetwork network)
         {
             settingsText.Clear().Append(page.Source.Name).Append(view.ToString()).Append('|');
+            settingsText.Append(picked?.Track ?? -1).Append('|').Append(AheadRoute.Destination?.Track ?? -1).Append('|');
             foreach (var s in page.Schematic.Switches)
             {
                 var j = s.Junction >= 0 && s.Junction < network.Junctions.Length ? network.Junctions[s.Junction] : null;
@@ -307,6 +350,9 @@ namespace CommsTablet.Map
         }
 
         private static readonly Color SetColor = new Color(0.12f, 0.58f, 0.22f, 0.95f);
+
+        /// <summary>The track picked on the map, and the one Track Ahead is routing to.</summary>
+        private static readonly Color PickedColor = Hex("c98a1c"), DestinationColor = Hex("b5381f");
 
         /// <summary>What the tablet draws over the page: each switch's setting, a bar along the leg it is set to.</summary>
         private static void Overlay(BookletPage page, TrackNetwork network, Func<double, double, Vector2> px)
@@ -323,6 +369,9 @@ namespace CommsTablet.Map
                 var d = s.LegDirections[(int)leg.Value];
                 BookletRenderer.Line(px(s.Point.X, s.Point.Z), px(s.Point.X + d.X * 22, s.Point.Z + d.Z * 22), 6, SetColor);
             }
+            Mark(page, network, AheadRoute.Destination, DestinationColor, px);
+            if (picked != null && (AheadRoute.Destination == null || picked.Track != AheadRoute.Destination.Track))
+                Mark(page, network, picked, PickedColor, px);
             // The locos: each a short bar along its track, a little gap at each end, smoked iron with an ink edge (the player's own in brass).
             // Where a long line is drawn short (the route map), a bar is drawn at least LocoMinPixels long about where it stands.
             var minimum = LocoMinPixels / Math.Max(1e-6, view.Scale);
@@ -345,6 +394,15 @@ namespace CommsTablet.Map
                     Along(px, run, lo, hi, 10, c.Own ? own : fill);
                 }
             }
+        }
+
+        // A goal's track, drawn over the page's own line.
+        private static void Mark(BookletPage page, TrackNetwork network, AheadGoal goal, Color color, Func<double, double, Vector2> px)
+        {
+            if (goal == null)
+                return;
+            foreach (var (run, a, b) in page.Stretch(goal.Track, 0, network.Graph.Length(goal.Track)))
+                Along(px, run, Math.Min(a, b), Math.Max(a, b), 12, AsDrawn(color));
         }
 
         private static void Along(Func<double, double, Vector2> px, BookletRun run, double a, double b, float width, Color color)
@@ -591,6 +649,7 @@ namespace CommsTablet.Map
         private static void Nav(MapPage owner, Booklet book, PageRef page)
         {
             Open(book, page);
+            picked = null;
             owner.Notice = null;
             Changed();
         }
@@ -629,6 +688,7 @@ namespace CommsTablet.Map
             if (Button(S(x, 238 + LetterRows * 66, 128, 72), $"<size=23>{Tint("Here", Soft)}</size>\n<b>{(near != null ? near.Code : "—")}</b>", Plate, near != null))
             {
                 ShowHere(book, network);
+                picked = null;
                 owner.Notice = null;
                 Changed();
             }
@@ -641,6 +701,40 @@ namespace CommsTablet.Map
                 Step(0, -1);
             if (Button(S(x + 68, ay + 66, 60, 60), "▼", Plate))
                 Step(0, 1);
+            // Picking for Track Ahead, ROUTE waits for a track, and CANCEL goes back with nothing sent.
+            if ((picked != null || forAhead) && Button(S(x, PickY, 128, 52), picked != null ? Tint("ROUTE", Brass2) : "ROUTE", picked != null ? PlateOn : Plate, picked != null))
+            {
+                AheadRoute.Destination = picked;
+                picked = null;
+                dirty = true;
+                if (forAhead)
+                {
+                    forAhead = false;
+                    owner.Notice = null;
+                    owner.BackToAhead();
+                    return;
+                }
+                owner.Notice = $"Track Ahead now routes to {AheadRoute.Destination.Name}";
+                Changed();
+            }
+            if (forAhead)
+            {
+                if (Button(S(x, PickY + 58, 128, 52), "CANCEL", Plate))
+                {
+                    forAhead = false;
+                    picked = null;
+                    owner.Notice = null;
+                    dirty = true;
+                    owner.BackToAhead();
+                }
+            }
+            else if (AheadRoute.Destination != null && Button(S(x, PickY + 58, 128, 52), "CLEAR", Plate))
+            {
+                owner.Notice = $"Track Ahead no longer routes to {AheadRoute.Destination.Name}";
+                AheadRoute.Destination = null;
+                dirty = true;
+                Changed();
+            }
         }
 
         /// <summary>A step with an arrow: three fifths of what the map shows.</summary>
@@ -677,10 +771,12 @@ namespace CommsTablet.Map
                 if (book == null)
                     return MapWorld.HasNetwork ? "Reading the station booklet…" : "Waiting for the world";
                 var page = book.Page(at);
+                if (forAhead)
+                    return page == null || page.IsRoute ? "Tap a track, or a station to open it, then ROUTE" : "Tap a track, then ROUTE";
                 var opens = page == null || page.IsRoute ? "Press a station to open it" : book.Find(page.Station)?.Overview == page ? "Press a yard to open it" : null;
                 var throws = TabletMaps.CanSwitch ? "a switch to throw it" : "the Dispatcher license throws switches";
                 if (opens == null)
-                    return TabletMaps.CanSwitch ? "Press a switch to throw it" : "The Dispatcher license throws switches from the map";
+                    return TabletMaps.CanSwitch ? "Press a switch to throw it, a track to route there" : "Press a track to route there; switches take the Dispatcher license";
                 return TabletMaps.CanSwitch ? $"{opens}, {throws}" : $"{opens}; {throws}";
             }
         }
@@ -699,7 +795,7 @@ namespace CommsTablet.Map
             var ly = canvas.y - MapY;
             // A press on the tabs, the column, or the status strip is theirs, between their plates too.
             if (lx < 0 || ly < 0 || lx > MapW || ly > StripTop
-                || S(16, 16, 104, 58 * (Per + 2)).Contains(canvas) || S(MapW - 16 - 128, 16, 128, 630).Contains(canvas))
+                || S(16, 16, 104, 58 * (Per + 2)).Contains(canvas) || S(MapW - 16 - 128, 16, 128, StripTop - 16).Contains(canvas))
                 return;
             try
             {
@@ -714,7 +810,7 @@ namespace CommsTablet.Map
         /// <summary>
         /// What a press at a map point does: on the route map a station's
         /// badge opens its overview; else the switch nearest it throws; else
-        /// an overview's capsule opens its yard.
+        /// an overview's capsule opens its yard; else the track there is picked.
         /// </summary>
         private static void Press(MapPage owner, Booklet book, TrackNetwork network, BookletPage page, float lx, float ly)
         {
@@ -737,7 +833,31 @@ namespace CommsTablet.Map
             }
             var capsule = page.CapsuleAt(px, py, radius);
             if (capsule != null && page.Station != null && book.Find(page.Station)?.Find(capsule) != null)
+            {
                 Nav(owner, book, PageRef.OfYard(page.Station, capsule));
+                return;
+            }
+            var place = page.TrackAt(px, py, radius);
+            if (place.HasValue)
+                Pick(owner, network, page, place.Value);
+        }
+
+        /// <summary>Picks a track, or lets it go if it was the one picked: nothing is sent until ROUTE is pressed.</summary>
+        private static void Pick(MapPage owner, TrackNetwork network, BookletPage page, TrackPosition place)
+        {
+            if (picked != null && picked.Track == place.Track)
+            {
+                picked = null;
+                owner.Notice = null;
+            }
+            else
+            {
+                var where = page.Station == null || string.IsNullOrEmpty(page.Yard) ? page.Station : $"{page.Station}-{page.Yard}";
+                picked = AheadGoal.ForPlace(network, place, where);
+                owner.Notice = $"{picked.Name}: press ROUTE to go there";
+            }
+            dirty = true;
+            Changed();
         }
 
         /// <summary>The station whose route-map badge is nearest a page point (y down), within <paramref name="radius"/>; null if none.</summary>
@@ -801,6 +921,33 @@ namespace CommsTablet.Map
                 else if (t.Yard != null)
                     Nav(owner, book, PageRef.OfYard(page.Station, t.Yard));
             }
+            if (page.IsRoute)
+                return;
+            // Then the tracks, each at its middle, wherever a plate still fits: what acts on the map comes first.
+            var taken = shown.Select(t => t.At).ToList();
+            foreach (var t in TrackTargets(page))
+            {
+                if (!inside.Contains(t.At) || taken.Any(o => (o - t.At).sqrMagnitude < PlateSize * PlateSize))
+                    continue;
+                taken.Add(t.At);
+                var r = new Rect(Mathf.Round(t.At.x - PlateSize / 2), Mathf.Round(t.At.y - PlateSize / 2), PlateSize, PlateSize);
+                if (Button(r, null, Invisible))
+                    Pick(owner, network, page, t.Place);
+            }
+        }
+
+        /// <summary>The middle of each track line on the page, where it is drawn now.</summary>
+        internal static List<(Vector2 At, TrackPosition Place)> TrackTargets(BookletPage page)
+        {
+            var list = new List<(Vector2, TrackPosition)>();
+            foreach (var r in page.Runs)
+            {
+                if (!r.Matched || r.IsCapsule)
+                    continue;
+                var (mid, _) = r.Drawn.PointAt(r.Drawn.Length / 2);
+                list.Add((CanvasPoint(mid.X, -mid.Z), r.PositionAt(r.Drawn.Length / 2)));
+            }
+            return list;
         }
 
         /// <summary>A thing to press on the map, where it is drawn (canvas pixels).</summary>

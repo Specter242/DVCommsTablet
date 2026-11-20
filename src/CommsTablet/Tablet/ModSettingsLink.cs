@@ -120,10 +120,14 @@ namespace CommsTablet.Tablet
         internal readonly UnityModManager.ModEntry Entry;
         private readonly Func<UnityModManager.ModSettings> current;
 
-        internal OwnerMod(UnityModManager.ModEntry entry, Func<UnityModManager.ModSettings> current)
+        /// <summary>The mod's one-time actions, or null for none.</summary>
+        internal readonly ModActions Actions;
+
+        internal OwnerMod(UnityModManager.ModEntry entry, Func<UnityModManager.ModSettings> current, ModActions actions = null)
         {
             Entry = entry;
             this.current = current;
+            Actions = actions;
         }
 
         internal string Id => Entry.Info.Id;
@@ -135,6 +139,8 @@ namespace CommsTablet.Tablet
         {
             get
             {
+                if (current == null)
+                    return null;
                 try
                 {
                     return current();
@@ -250,13 +256,18 @@ namespace CommsTablet.Tablet
             || id.EndsWith("Probe", StringComparison.OrdinalIgnoreCase)
             || (name ?? "").IndexOf("probe", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        /// <summary>Where a mod comes in the list: its place in <see cref="Order"/>, any other after, the self-test's last.</summary>
+        /// <summary>The Comms Tablet's own id, its section after the other mods'.</summary>
+        internal const string OwnId = "CommsTablet";
+
+        /// <summary>Where a mod comes in the list: its place in <see cref="Order"/>, any other after, then the Comms Tablet's own, the self-test's last.</summary>
         internal static int Rank(string id)
         {
 #if !PUBLIC_RELEASE
             if (string.Equals(id, SelfTestId, StringComparison.OrdinalIgnoreCase))
-                return Order.Length + 1;
+                return Order.Length + 2;
 #endif
+            if (string.Equals(id, OwnId, StringComparison.OrdinalIgnoreCase))
+                return Order.Length + 1;
             var index = Array.FindIndex(Order, o => string.Equals(o, id, StringComparison.OrdinalIgnoreCase));
             return index >= 0 ? index : Order.Length;
         }
@@ -281,24 +292,31 @@ namespace CommsTablet.Tablet
             {
                 try
                 {
-                    if (entry?.Info == null || entry.Info.Author != Author || !entry.Active || entry.Assembly == null)
+                    if (entry?.Info == null || !entry.Active || entry.Assembly == null || entry == Main.Mod)
                         continue;
+                    var owners = entry.Info.Author == Author;
                     if (Excluded(entry.Info.Id, entry.Info.DisplayName))
                     {
-                        PassedOver.Add($"{entry.Info.Id}: kept off the tablet");
+                        if (owners)
+                            PassedOver.Add($"{entry.Info.Id}: kept off the tablet");
                         continue;
                     }
-                    var current = SettingsOf(entry.Assembly);
-                    if (current != null && current() != null)
-                        found.Add(new OwnerMod(entry, current));
+                    var current = owners ? SettingsOf(entry.Assembly) : null;
+                    if (current != null && current() == null)
+                        current = null;
+                    var actions = ModActions.Find(entry.Assembly, string.IsNullOrEmpty(entry.Info.DisplayName) ? entry.Info.Id : entry.Info.DisplayName);
+                    if (current != null || actions != null)
+                        found.Add(new OwnerMod(entry, current, actions));
                 }
                 catch (Exception e)
                 {
                     Main.Mod?.Logger.Warning($"Could not find {entry?.Info?.Id}'s settings: {e.GetBaseException().Message}");
                 }
             }
+            if (Main.Mod != null)
+                found.Add(new OwnerMod(Main.Mod, null, ModActions.Own()));
             found = Ordered(found, m => m.Id, m => m.Name).ToList();
-            Main.Mod?.Logger.Log("Settings app: " + (found.Count > 0 ? string.Join(", ", found.Select(m => m.Name)) : "none of the owner's mods has settings")
+            Main.Mod?.Logger.Log("Settings app: " + string.Join(", ", found.Select(m => m.Name + (m.Actions != null ? " (with Equipment)" : "")))
                                  + (PassedOver.Count > 0 ? "; left out " + string.Join(", ", PassedOver) : ""));
             return found;
         }

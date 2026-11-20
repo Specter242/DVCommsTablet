@@ -9,10 +9,12 @@ Your mod does not reference `CommsTablet.dll`. You publish one static class
 with a fixed name, and the tablet finds it by reflection and binds its members.
 Without the Comms Tablet installed, your mod runs as it does now.
 
-This is guest contract **version 2** (Comms Tablet 0.1.3 and newer). Version 2
+This is guest contract **version 3** (Comms Tablet 0.1.4 and newer). Version 2
 adds car-first apps (see "Car-first apps"); an app written for version 1 still
-binds, unchanged. Two published mods implement version 1, and both are worth
-reading next to this guide:
+binds, unchanged. Version 3 adds one-time actions in the tablet's Settings app,
+for any mod, with or without an app (see "One-time actions in the Settings
+app"). Two published mods implement version 1, and both are worth reading next
+to this guide:
 
 - Realistic Firing:
   [`CommsTabletApp.cs`](https://github.com/Specter242/DVRealisticFiring/blob/main/src/RealisticFiring/CommsTabletApp.cs)
@@ -154,6 +156,51 @@ and Change pages do. Declare `Contract = 2` and add:
 - A Comms Tablet older than 0.1.3 takes only contract 1, so it hides a
   contract-2 app with one log line.
 
+## One-time actions in the Settings app (contract 3)
+
+The tablet's Settings app can show your mod's one-time actions: the buttons
+in your own settings window, such as "Give fire iron" or "Give brake
+booklet". Any mod can offer them, with or without an app, on a class of
+their own:
+
+```csharp
+namespace YourMod   // your assembly's simple name
+{
+    public static class CommsTabletSettings
+    {
+        public static string[] Actions();      // with Act: the buttons' labels, in order
+        public static string Act(int index);   // with Actions: runs action `index`, returns its notice
+        public static string[] ActionHelp();   // optional: a line under each label, the same length
+    }
+}
+```
+
+| Member | When the tablet calls it | What your mod does |
+| --- | --- | --- |
+| `Actions()` | each time your section is drawn: on opening, after a press, and about twice a second while it is open and seen | returns the labels, in order; null or empty for none now. Keep it cheap: a static array |
+| `ActionHelp()` | with `Actions()` | returns a line under each label. A different length is ignored, with one log line |
+| `Act(index)` | on the main thread, at the start of the tablet's next update after the press, outside its drawing | does the whole action at once, as your own button would, multiplayer rules included, and shows your own notice; returns that notice's text, or null if nothing happened |
+
+- The tablet finds the class in your mod's own assembly, as
+  `<YourAssembly>.CommsTabletSettings`, when its Settings app first lists the
+  mods in a session. The class has no `Contract` constant.
+- `Actions` and `Act` go together. With only one of them, or a wrong
+  signature, your mod gets no buttons and one log line; nothing else is
+  affected.
+- Your actions go under an "Equipment" heading at the top of your mod's
+  section, each a wide button with its label and help line. The Settings app
+  shows settings only for the tablet author's own mods; for any other mod,
+  the section holds only its actions.
+- The tablet shows the notice you return in its status strip, or "<label>:
+  nothing happened" for null.
+- The player is usually holding the tablet, so their hand is full. Never take
+  the tablet out of the hand: put the item in front of the player or at their
+  feet.
+- If any of the three throws, the exception is logged once, and your actions
+  are hidden for the rest of the session.
+- `GuestContract.Max >= 3` tells you the installed tablet draws these buttons.
+  Older tablets ignore the class.
+
 ## The screen
 
 - **The region** is a `RectTransform` of 1080 by 924 canvas pixels. That is the
@@ -257,8 +304,11 @@ signature, or a taken `Id`.
 ## Versioning
 
 - `CommsTablet.GuestContract` (public, in `CommsTablet.dll`) has
-  `const int Min = 1, Max = 2` and `static bool Merged(string id)`.
+  `const int Min = 1, Max = 3` and `static bool Merged(string id)`.
   - Version 2 (Comms Tablet 0.1.3) added the optional car-first members.
+  - Version 3 (Comms Tablet 0.1.4) added the Settings app's actions class. It
+    is read whatever contract your app declares, so an app need not declare 3;
+    declaring 3 only hides it from older tablets.
 - `GuestContract.Merged(Id)` is true when all three hold: the Comms Tablet
   loaded, it can build its tablet, and it bound your app. It stays true for the
   rest of the session, even if your app later throws.
@@ -351,3 +401,6 @@ then gives yours again, because you cleared the flag.
 - `PressArea` is clear of slots, and everything is a slot in VR.
 - `Close` lets go of everything made for the view.
 - `Merged` is asked lazily, never in `Load`.
+- Settings actions, if any: `<YourAssembly>.CommsTabletSettings` with `Actions`
+  and `Act` together, cheap to read, and an `Act` that never takes the tablet
+  out of the player's hand.

@@ -160,6 +160,13 @@ namespace CommsTablet.Tablet
             if (canvas == null || radio == null)
                 return;
             CloseFailed();
+            // A one-time action pressed on the last pass runs now, outside the canvas pass: it may change
+            // what the player holds. Nothing more this frame; the next one draws its notice.
+            if (radio.Current != null && radio.Current.RunQueued())
+            {
+                refreshAt = 0f;
+                return;
+            }
             Map.TabletMap.PutAwayIfUnseen();
             var camera = PlayerManager.ActiveCamera;
             visible = camera != null && shell != null && shell.enabled && shell.gameObject.activeInHierarchy
@@ -1096,6 +1103,7 @@ namespace CommsTablet.Tablet
             texture = null;
             dirty = true;
             Map.TabletMap.ReleaseTexture();
+            Map.TabletAhead.ReleaseTexture();
         }
 
         /// <summary>The map layer's pool of buttons, which its plates take in order, and the map's own button behind them.</summary>

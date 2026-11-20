@@ -42,15 +42,23 @@ public release (`-p:PublicRelease=true`) leaves out its hooks.
 Other mods can put an app on the tablet's home screen: publish a static
 class named `<YourAssembly>.CommsTabletApp`, and the tablet finds it and
 binds its members by reflection, with no reference to `CommsTablet.dll`.
-The full contract (version 2), with its members, when each is called, the
+The full contract (version 3), with its members, when each is called, the
 screen, the buttons, versioning, and Realistic Firing's and AI Engineer's
-working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md).
-`src/CommsTablet/Guests/` is the host side.
+working examples, is in [`GUEST-APPS.md`](GUEST-APPS.md). A mod can
+also put its give buttons in the tablet's Settings app, with or without an
+app, through `<YourAssembly>.CommsTabletSettings` (contract 3, in the same
+guide). `src/CommsTablet/Guests/` is the host side.
 
 ## Releases
 
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
+
+**0.1.4**: Track Ahead, a new app (the grades, limits, switches, and
+times on the line ahead, to a job or a destination you set); a Map app on
+the home screen; mods' give buttons under Equipment in the Settings app,
+which now always shows, with "Give me a comms tablet"; guest contract 3,
+for those buttons.
 
 **0.1.3**: Double Tracked Valley's switches in the switch books (the
 route map re-laid, the booklet's yard pages and a hump yard page), for

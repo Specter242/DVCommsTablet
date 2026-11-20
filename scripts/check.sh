@@ -23,10 +23,12 @@ if grep -q -E "warning CS" <<<"$build"; then
     grep -E "warning CS" <<<"$build" | sort -u >&2
     exit 1
 fi
+# CHECK_RF_DLL checks another Realistic Firing build than the installed one (a test build's, say); other
+# mods' DLLs given as arguments are loaded too (Realistic Brakes': its Core beside it).
 # DV Car Changer's and Double Track's pinned assemblies (scripts/fetch-check-mods.sh), when fetched.
 pinned=()
 [[ -f "$repo/.deps/DVCarChanger/CarChanger.Game.dll" ]] && pinned+=("$repo/.deps/DVCarChanger/CarChanger.Common.dll" "$repo/.deps/DVCarChanger/CarChanger.Game.dll")
 [[ -f "$repo/.deps/DoubleTrack/DoubleTrack.dll" ]] && pinned+=("$repo/.deps/DoubleTrack/DoubleTrack.dll")
 mono "$project/bin/Release/net48/CommsTablet.Check.exe" "$dv/DerailValley_Data/Managed" \
     "$dv/Mods/Multiplayer/Multiplayer.dll" "$dv/Mods/DVCustomCarLoader/CCL.Importer.dll" \
-    "$dv/Mods/RealisticFiring/RealisticFiring.dll" "$dv/Mods/DVLangHelper/DVLangHelper.Data.dll" "${pinned[@]}" "$@"
+    "${CHECK_RF_DLL:-$dv/Mods/RealisticFiring/RealisticFiring.dll}" "$dv/Mods/DVLangHelper/DVLangHelper.Data.dll" "${pinned[@]}" "$@"

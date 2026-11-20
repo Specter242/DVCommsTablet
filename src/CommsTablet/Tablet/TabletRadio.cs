@@ -120,17 +120,21 @@ namespace CommsTablet.Tablet
             var wheels = new RearrangePage(this);
             var change = new ChangePage(this);
             var switches = new SwitchPage(this);
-            var map = new MapPage(this);
+            var map = new MapPage(this, false);
+            var mapApp = new MapPage(this, true);
+            var ahead = new AheadPage(this);
             var rerail = new RerailPage(this);
             var clear = new ClearPage(this);
             var startup = new StartupPage(this);
             var damage = new DamagePage(this);
-            Pages.AddRange(new TabletPage[] { summon, buy, spawn, cargo, paint, wheels, change, switches, map, rerail, clear, startup, damage });
+            Pages.AddRange(new TabletPage[] { summon, buy, spawn, cargo, paint, wheels, change, switches, map, mapApp, ahead, rerail, clear, startup, damage });
             // The game's own interface glyphs where it has one (a paint roller is drawn in their style).
             Apps.Add(new TabletApp("Vehicles", "UI_TrainLoco", "vehicles", summon, buy, spawn));
             Apps.Add(new TabletApp("Cargo", "UI_Item", "cargo", cargo));
             Apps.Add(new TabletApp("Workshop", null, "workshop", paint, wheels, change));
             Apps.Add(new TabletApp("Switches", "UI_BookletSchematicMap", "switches", switches, map));
+            Apps.Add(new TabletApp("Map", "UI_Map", "map", mapApp));
+            Apps.Add(new TabletApp("Track Ahead", null, "ahead", ahead));
             Apps.Add(new TabletApp("Tools", "UI_Mods", "tools", rerail, clear, startup, damage));
             // The radio's flashlight, a tile that switches it, offered where the player's radio has its Light.
             // Not on the mount: the light is the item's, put away there.
@@ -476,6 +480,7 @@ namespace CommsTablet.Tablet
             old?.Disable();
             Arrow?.TurnOff();
             Current = page;
+            page?.Opened();
             var app = CurrentApp;
             if (app != null) app.Last = page;
             var mode = page?.Mode;

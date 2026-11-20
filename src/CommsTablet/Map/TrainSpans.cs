@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using CommsTablet.Core.Tracks;
 using UnityEngine;
 
 namespace CommsTablet.Map
@@ -47,6 +48,29 @@ namespace CommsTablet.Map
             // Across a joint: each part runs from its coupler toward the other bogie, to its track's end.
             into.Add((ft, frontCoupler, fSign > 0 ? 0 : graph.Length(ft)));
             into.Add((rt, rearCoupler, rSign > 0 ? graph.Length(rt) : 0));
+        }
+
+        /// <summary>
+        /// Where a car's coupler at one end lies on the network, and the way
+        /// along that track points away from the car; false for a derailed
+        /// car or one not on the network.
+        /// </summary>
+        public static bool CouplerEnd(TrackNetwork network, TrainCar car, bool front, out TrackPosition at, out TrackDirection outward)
+        {
+            at = default;
+            outward = TrackDirection.Forward;
+            if (car == null || car.derailed || car.Bogies == null || car.Bogies.Length < 1)
+                return false;
+            var bogie = front ? car.FrontBogie : car.RearBogie;
+            if (bogie == null || bogie.track == null || bogie.traveller == null || !network.TryGetTrack(bogie.track, out var track))
+                return false;
+            var g = Geometry(car);
+            var carForward = bogie.TrackDirectionSign >= 0 ? 1 : -1;
+            var sign = front ? carForward : -carForward;
+            var offset = bogie.traveller.Span + sign * (front ? g.FrontOverhang : g.RearOverhang);
+            at = new TrackPosition(track, Clamp(network.Graph.Length(track), offset));
+            outward = sign > 0 ? TrackDirection.Forward : TrackDirection.Backward;
+            return true;
         }
 
         private static double Clamp(double length, double offset) => Math.Max(0, Math.Min(length, offset));

@@ -38,11 +38,20 @@ the tablet just as you would the radio.
   route map and every station's yard maps, with each switch's setting; the
   locomotives show with the game's Map Blips setting; with the Dispatcher
   license, press a switch to throw it).
+- **Track Ahead:** the line ahead of your train: its grades, speed limits,
+  and switches, with the distance and time to what comes next. It follows
+  the switches as set, the job of the car at the end of your train, or a
+  destination you set with SET DESTINATION (tap a track on the map, then
+  ROUTE; CLEAR drops it).
+- **Map:** the same map as Switches, straight from the home screen.
 - **Tools:** Rerail, Clear, Startup, and Damage, as on the radio.
 - **Light:** switches the tablet's flashlight on and off.
 - **Settings:** the settings of the author's other mods that are installed
   (Realistic Firing, AI Engineer, Realistic Brakes, Realistic Stack
-  Effects), saved just as their own settings windows save them.
+  Effects), saved just as their own settings windows save them. A mod that
+  offers give buttons shows them first in its section, under Equipment;
+  the item lands in front of you. The Comms Tablet's own section gives a
+  spare tablet.
 - **Firing** and **Engineers:** Realistic Firing's and AI Engineer's pages,
   with their versions that know the tablet.
 
@@ -63,9 +72,7 @@ Paint, Rerail, and the like) ask you to take it in hand.
 - **Custom Car Loader:** its engines in Spawn, its work trains in Buy.
 - **Rearranged S282 / S060:** the Wheels page.
 - **DV Car Changer 1.5.4:** the Change page. Another version of Car
-  Changer hides it until the tablet is updated for that version. If Car
-  Changer adds an app of its own to the tablet, the Change page steps
-  aside for it.
+  Changer hides it until the tablet is updated for that version.
 - **Double Track 2.1.1:** its switches in the switch books (below).
 - **Realistic Firing, AI Engineer:** their apps (Firing, Engineers), and
   their own tablets retired.

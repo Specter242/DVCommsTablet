@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.4 (2026-11-20)
+
+- **Track Ahead**, a new app: the line ahead of your train on one screen,
+  with its grades, speed limits, switches, and the distance and time to
+  what comes next. It follows the switches as they are set, or the job of
+  the car at the end of your train, or a destination you choose: press
+  SET DESTINATION, tap a track on the map, then ROUTE.
+- **Map**, a new app on the home screen: the same map as Switches, one tap
+  away.
+- **Equipment in Settings:** mods that offer them show give buttons at the
+  top of their section. Press one and the item lands in front of you.
+- **The Settings app always shows** now, with **Give me a comms tablet**
+  for a spare.
+- **For other mods' authors:** guest contract 3 (`GUEST-APPS.md`) lets any
+  mod offer those buttons.
+
 ## 0.1.3 (2026-11-17)
 
 - **Double Tracked Valley's switches in the switch books.** With Double

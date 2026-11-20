@@ -150,6 +150,11 @@ namespace CommsTablet.Tablet
                 case "switches": // a route forking in two
                     return Join(Line(0.5f, 0.16f, 0.5f, 0.47f, 0.1f), Line(0.5f, 0.47f, 0.27f, 0.78f, 0.1f), Line(0.5f, 0.47f, 0.73f, 0.78f, 0.1f),
                         Disc(0.27f, 0.79f, 0.09f), Disc(0.73f, 0.79f, 0.09f), Disc(0.5f, 0.17f, 0.09f));
+                case "map": // a map folded in three, the middle panel set lower
+                    return Join(Path(0.08f, 0.18f, 0.76f, 0.39f, 0.82f, 0.61f, 0.76f, 0.82f, 0.82f, 0.82f, 0.24f, 0.61f, 0.18f, 0.39f, 0.24f, 0.18f, 0.18f, 0.18f, 0.76f),
+                        Line(0.39f, 0.8f, 0.39f, 0.26f, 0.07f), Line(0.61f, 0.74f, 0.61f, 0.2f, 0.07f));
+                case "ahead": // a climbing line of track, its end an arrow
+                    return Join(Path(0.09f, 0.14f, 0.3f, 0.38f, 0.3f, 0.6f, 0.62f, 0.84f, 0.62f), Line(0.7f, 0.76f, 0.84f, 0.62f, 0.09f), Line(0.7f, 0.48f, 0.84f, 0.62f, 0.09f));
                 case "light": // a bulb
                     return Join(Disc(0.5f, 0.6f, 0.21f), RoundBox(0.5f, 0.33f, 0.11f, 0.09f, 0.03f), Line(0.42f, 0.2f, 0.58f, 0.2f, 0.07f));
                 case "tools": // a wrench

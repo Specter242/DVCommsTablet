@@ -15,6 +15,7 @@
     <Reference Include="0Harmony" HintPath="$(DvModManagerDir)/0Harmony.dll" Private="false" />
     <Reference Include="UnityModManager" HintPath="$(DvModManagerDir)/UnityModManager.dll" Private="false" />
     <Reference Include="Assembly-CSharp" HintPath="$(DvManagedDir)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="BezierCurves" HintPath="$(DvManagedDir)/BezierCurves.dll" Private="false" />
     <Reference Include="DV.CabControls.Spec" HintPath="$(DvManagedDir)/DV.CabControls.Spec.dll" Private="false" />
     <Reference Include="DV.Interaction" HintPath="$(DvManagedDir)/DV.Interaction.dll" Private="false" />
     <Reference Include="DV.Inventory" HintPath="$(DvManagedDir)/DV.Inventory.dll" Private="false" />

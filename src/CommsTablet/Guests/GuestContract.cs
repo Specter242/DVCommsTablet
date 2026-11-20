@@ -8,9 +8,14 @@ namespace CommsTablet
         /// <summary>
         /// The newest guest contract this tablet takes. Contract 2 (Comms
         /// Tablet 0.1.3) adds the optional car-first members: <c>Fits</c>,
-        /// <c>Chosen</c>, and <c>BeamColor</c>.
+        /// <c>Chosen</c>, and <c>BeamColor</c>. Contract 3 (Comms Tablet
+        /// 0.1.4) adds the Settings app's one-time actions: a mod's own
+        /// <c>&lt;assembly name&gt;.CommsTabletSettings</c> with
+        /// <c>Actions</c>, <c>Act</c>, and optional <c>ActionHelp</c>, read
+        /// whatever contract its app declares (an app's members are
+        /// unchanged), so <c>Max &gt;= 3</c> says this tablet draws them.
         /// </summary>
-        public const int Max = 2;
+        public const int Max = 3;
 
         /// <summary>
         /// Whether the tablet has bound the guest with this <c>Id</c>: its

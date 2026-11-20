@@ -103,6 +103,7 @@ namespace CommsTablet.Map
             nextBuildAttempt = 0f;
             BookletReader.Forget();
             TabletMap.Forget();
+            TabletAhead.Forget();
         }
     }
 }

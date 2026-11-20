@@ -10,8 +10,8 @@ namespace CommsTablet.Map
     /// tracks and switches indexed both ways. AI Engineer's <c>Network</c>
     /// (c6e6207, src/AIEngineer/Game/Network.cs) stripped to the graph:
     /// tracks, plain joints, turntable bridges left unjoined, and switches;
-    /// its speed curves, router, map lines, nearest-track grid, and export
-    /// are left out. Built once per loaded world (<see cref="MapWorld"/>).
+    /// its speed curves, map lines, nearest-track grid, and export are
+    /// left out. Built once per loaded world (<see cref="MapWorld"/>).
     /// </summary>
     internal sealed class TrackNetwork
     {
@@ -25,6 +25,11 @@ namespace CommsTablet.Map
         public RailTrack[] Tracks { get; private set; }
 
         public Junction[] Junctions { get; private set; }
+
+        private TrackShapes shapes;
+
+        /// <summary>The tracks' heights, grades, and limits, each read the first time it is wanted.</summary>
+        public TrackShapes Shapes => shapes ?? (shapes = new TrackShapes(this));
 
         public bool TryGetTrack(RailTrack track, out int index) => trackIndex.TryGetValue(track, out index);
 

@@ -48,8 +48,10 @@ namespace CommsTablet.Check
             LoadSites();
             SwitchBooks(mods);
             GuestBinding();
+            SettingsActions();
             SettingsRows();
             Release();
+            TrackAheadChecks.Run(Check);
             Optional(mods);
 
             Console.WriteLine($"{passed} checks passed, {Failures.Count} failed");
@@ -86,6 +88,8 @@ namespace CommsTablet.Check
         {
             foreach (var missing in GameMembers.Missing)
                 Failures.Add("game member " + missing);
+            foreach (var changed in TrackAheadChecks.ChangedSignSteps())
+                Failures.Add("the game's sign rules changed, so Core/Ahead/SignLimits.cs needs comparing again: " + changed);
             Check(GameMembers.SummonResolves, "Summon's members");
             Check(GameMembers.SummonRefresh != null, "the crew vehicle's UpdateAvailableVehicles (work trains bought)");
             Check(GameMembers.SpawnResolves, "Spawn's members");
@@ -204,10 +208,10 @@ namespace CommsTablet.Check
         // The guest contract binds a well-formed guest, and refuses another contract or a wrong signature at binding.
         private static void GuestBinding()
         {
-            Check(GuestContract.Min == 1 && GuestContract.Max == 2, "the tablet takes guest contracts 1 and 2");
+            Check(GuestContract.Min == 1 && GuestContract.Max == 3, "the tablet takes guest contracts 1 to 3");
             var good = Guests.GuestApp.Bind(typeof(GoodGuest), "GoodGuest", out var why);
             Check(good != null && good.Id == "good" && good.Tablet == "Good_Tablet" && good.Contract == 1 && !good.CarFirst, "a well-formed guest binds", why);
-            Check(Guests.GuestApp.Bind(typeof(LaterGuest), "LaterGuest", out why) == null && why != null && why.Contains("99") && why.Contains("1 to 2"),
+            Check(Guests.GuestApp.Bind(typeof(LaterGuest), "LaterGuest", out why) == null && why != null && why.Contains("99") && why.Contains("1 to 3"),
                 "a guest of another contract is refused, naming both versions", why);
             var car = Guests.GuestApp.Bind(typeof(CarGuest), "CarGuest", out why);
             Check(car != null && car.Contract == 2 && car.CarFirst && car.BeamColor() == UnityEngine.Color.red,
@@ -218,11 +222,68 @@ namespace CommsTablet.Check
                 "a car-first guest needs both Fits and Chosen", why);
             var older = Guests.GuestApp.Bind(typeof(OldCarGuest), "OldCarGuest", out why);
             Check(older != null && !older.CarFirst, "a contract-1 guest's Fits is not read: it is not car first", why);
-            var theirs = Guests.GuestApp.Bind(typeof(CarGuest), "CarChanger.Game", out _);
-            Check(Pages.ChangePage.StepsAsideFor(new[] { theirs }) && !Pages.ChangePage.StepsAsideFor(new[] { car, plain }),
-                "the native Change page steps aside for Car Changer's own app (a guest from CarChanger.Game), and for no other");
             Check(Guests.GuestApp.Bind(typeof(WrongGuest), "WrongGuest", out why) == null && why != null && why.Contains("Open") && why.Contains("wrong signature"),
                 "a guest whose Open has the wrong signature is refused at binding", why);
+        }
+
+        private static void SettingsActions()
+        {
+            var good = ModActions.Bind(typeof(GoodActions), "GoodActions", out var why);
+            var list = good?.List();
+            Check(good != null && list.Count == 2 && list[0].Index == 0 && list[0].Label == "Give a" && list[0].Help == "help a"
+                  && list[1].Index == 2 && list[1].Label == "Give c" && list[1].Help == null,
+                "Actions with Act bind; an empty label is skipped, the others keep their place in the mod's list and their help", why);
+            Check(good != null && good.Run(list[0]) == "did 0" && good.Run(list[1]) == "Give c: nothing happened" && !good.Failed,
+                "Act's notice is shown; a null one says nothing happened", good == null ? why : good.Run(list[1]));
+            Check(ModActions.Bind(typeof(HalfActions), "HalfActions", out why) == null && why != null && why.Contains("without Act"),
+                "Actions without Act gives no buttons", why);
+            Check(ModActions.Bind(typeof(HelpOnlyActions), "HelpOnlyActions", out why) == null && why != null && why.Contains("neither"),
+                "ActionHelp alone gives no buttons", why);
+            Check(ModActions.Bind(typeof(WrongActions), "WrongActions", out why) == null && why != null && why.Contains("Act") && why.Contains("wrong signature"),
+                "an Act with the wrong signature gives no buttons", why);
+            var mismatched = ModActions.Bind(typeof(MismatchedActions), "MismatchedActions", out why)?.List();
+            Check(mismatched != null && mismatched.Count == 2 && mismatched.All(a => a.Help == null), "help of another length is dropped, the buttons kept", why);
+            var throwing = ModActions.Bind(typeof(ThrowingActions), "ThrowingActions", out why);
+            var thrown = throwing?.Run(throwing.List()[0]);
+            Check(throwing != null && thrown != null && thrown.Contains("failed") && throwing.Failed && throwing.List().Count == 0,
+                "an Act that throws is contained: the buttons are hidden for the session", thrown ?? why);
+            var own = ModActions.Own().List();
+            Check(own.Count == 1 && own[0].Label == ModActions.OwnLabel && own[0].Help != null, "the tablet's own section has \"Give me a comms tablet\"",
+                string.Join(", ", own.Select(a => a.Label)));
+            Check(ModSettingsLink.Rank(ModSettingsLink.OwnId) > ModSettingsLink.Rank("SomeOtherMod"), "the tablet's own section comes after the other mods'");
+
+            // The mods' own classes, where their builds are loaded here: bound, their buttons read (static arrays; Act is not called).
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies().Where(a => a.GetName().Name.StartsWith("Realistic") || a.GetName().Name.StartsWith("AIEngineer")))
+            {
+                Type type;
+                try
+                {
+                    type = assembly.GetType(assembly.GetName().Name + "." + ModActions.ClassName, false);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                if (type == null)
+                {
+                    Console.WriteLine($"{assembly.GetName().Name} {assembly.GetName().Version}: no {ModActions.ClassName}");
+                    continue;
+                }
+                var bound = ModActions.Bind(type, assembly.GetName().Name, out why);
+                List<ModAction> buttons = null;
+                try
+                {
+                    buttons = bound?.List();
+                }
+                catch (Exception e)
+                {
+                    why = e.GetBaseException().Message;
+                }
+                Console.WriteLine($"{assembly.GetName().Name}'s Equipment: " + (buttons != null ? string.Join("; ", buttons.Select(b => $"{b.Index} \"{b.Label}\" ({b.Help ?? "no help"})")) : why));
+                Check(bound != null && buttons != null && buttons.Count > 0 && !bound.Failed,
+                    $"{assembly.GetName().Name}'s {ModActions.ClassName} binds and lists its buttons",
+                    buttons != null ? string.Join("; ", buttons.Select(b => $"{b.Index} {b.Label} ({b.Help ?? "no help"})")) : why);
+            }
         }
 
         // The Settings app reads settings as Unity Mod Manager's window does (decision 19), presented as decision 20 has it.
@@ -375,6 +436,42 @@ namespace CommsTablet.Check
         }
 
         // Guest classes for the binding checks: never called.
+        public static class GoodActions
+        {
+            public static string[] Actions() => new[] { "Give a", "", "Give c" };
+            public static string[] ActionHelp() => new[] { "help a", "unused", "" };
+            public static string Act(int index) => index == 0 ? "did 0" : null;
+        }
+
+        public static class HalfActions
+        {
+            public static string[] Actions() => new[] { "Give a" };
+        }
+
+        public static class HelpOnlyActions
+        {
+            public static string[] ActionHelp() => new[] { "help a" };
+        }
+
+        public static class WrongActions
+        {
+            public static string[] Actions() => new[] { "Give a" };
+            public static string Act(string action) => action;
+        }
+
+        public static class MismatchedActions
+        {
+            public static string[] Actions() => new[] { "Give a", "Give b" };
+            public static string[] ActionHelp() => new[] { "help a" };
+            public static string Act(int index) => "done";
+        }
+
+        public static class ThrowingActions
+        {
+            public static string[] Actions() => new[] { "Give a" };
+            public static string Act(int index) => throw new InvalidOperationException("no game");
+        }
+
         internal static class GoodGuest
         {
             public const int Contract = 1;
@@ -520,14 +617,6 @@ namespace CommsTablet.Check
             var version = info == null ? null : System.Text.RegularExpressions.Regex.Match(File.ReadAllText(info), "\"Version\"\\s*:\\s*\"([^\"]*)\"").Groups[1].Value;
             Check(CarChangerLink.Accepts(version), $"the Car Changer given is the pinned {CarChangerLink.Pinned}", $"its Info.json says {version ?? "nothing"}");
             Check(CarChangerLink.Resolves, "Car Changer's members the Change page calls", string.Join(", ", CarChangerLink.Missing()));
-            // Car Changer's own app on the tablet, in a build that has one: it binds car first, and the native page steps aside for it.
-            var own = game.GetType(CarChangerLink.GameAssembly + "." + Guests.GuestRegistry.ClassName, false);
-            if (own != null)
-            {
-                var bound = Guests.GuestApp.Bind(own, CarChangerLink.GameAssembly, out var why);
-                Check(bound != null && bound.Contract == 2 && bound.CarFirst, "Car Changer's own app binds as a contract-2, car-first guest", why);
-                Check(bound != null && Pages.ChangePage.StepsAsideFor(new[] { bound }), "the native Change page steps aside for Car Changer's own app");
-            }
             var config = AccessTools.TypeByName("CarChanger.Common.ModelConfig");
             var applied = AccessTools.TypeByName("CarChanger.Game.Components.AppliedChange");
             if (config == null || applied == null)

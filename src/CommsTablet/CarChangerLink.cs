@@ -15,9 +15,6 @@ namespace CommsTablet
     {
         internal const string Id = "DVCarChanger";
 
-        /// <summary>Car Changer's game assembly: where its own app on the tablet would be (<c>CarChanger.Game.CommsTabletApp</c>).</summary>
-        internal const string GameAssembly = "CarChanger.Game";
-
         /// <summary>The one version of Car Changer the Change page is written and checked against.</summary>
         internal const string Pinned = "1.5.4";
 

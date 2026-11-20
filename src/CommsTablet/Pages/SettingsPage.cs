@@ -19,11 +19,18 @@ namespace CommsTablet.Pages
         private const float ChipHeight = 60, ChipGap = 8;
         private const int ChipsPerLine = 8, SectionsForChips = 3;
         private const int ListColumns = 2, ListRows = 5;
+        // An action's plate: its label and the line under it, as the list's plates.
+        private const float ActionHeight = 100;
+
+        /// <summary>The heading over a mod's one-time actions, at the top of its section.</summary>
+        internal const string EquipmentTitle = "Equipment";
 
         private OwnerMod open;
         private int page;
         private string notice;
         private Layout shown;
+        private OwnerMod queuedMod;
+        private ModAction queuedAction;
 
         private static readonly Look RowLabel = TextLook(TabletSkin.Cream, 24, 20, TextAnchor.UpperLeft);
         private static readonly Look RowNote = TextLook(TabletSkin.Soft, 20, 17, TextAnchor.UpperLeft);
@@ -59,7 +66,9 @@ namespace CommsTablet.Pages
 
         internal override bool DrawsItself => true;
 
-        internal override string Status => notice ?? (open == null ? "Choose a mod to change its settings" : "Changes are saved at once, as in Unity Mod Manager's window");
+        internal override string Status => notice ?? (open == null ? "Choose a mod to change its settings"
+            : open.Settings == null ? "Each button acts once, as in the mod's own settings window"
+            : "Changes are saved at once, as in Unity Mod Manager's window");
 
         /// <summary>The mod whose settings are open, or null for the list of mods.</summary>
         internal OwnerMod Open => open;
@@ -71,6 +80,22 @@ namespace CommsTablet.Pages
         internal override void Capture() { }
 
         internal override void Reapply() { }
+
+        /// <summary>
+        /// Runs the action pressed on the last pass, called at the start of
+        /// the screen's update, outside the canvas pass: giving an item may
+        /// change what the player holds. Its notice goes to the status strip.
+        /// </summary>
+        internal override bool RunQueued()
+        {
+            if (queuedMod == null)
+                return false;
+            var mod = queuedMod;
+            queuedMod = null;
+            notice = mod.Actions?.Run(queuedAction) ?? $"{queuedAction.Label}: not available";
+            Main.Mod?.Logger.Log($"Settings app: {mod.Name}'s \"{queuedAction.Label}\": {notice}");
+            return true;
+        }
 
         private static Look TextLook(Color color, int size, int min, TextAnchor align) =>
             new Look { Text = color, Size = size, MinSize = min, Align = align, PadLeft = 0, PadRight = 0 };
@@ -134,7 +159,7 @@ namespace CommsTablet.Pages
                 var count = mod.Rows().Count(row => row.Kind != SettingKind.Heading && row.Kind != SettingKind.Space);
                 // A long name is split, not shrunk: its name, then what it is, then its count and version.
                 var name = MainName(mod.Name, out var detail);
-                var about = $"{count} settings · {mod.Entry.Info.Version}";
+                var about = $"{(count > 0 ? count + " settings" : EquipmentTitle)} · {mod.Entry.Info.Version}";
                 if (Button("mod:" + mod.Id, r, S.Two(name, detail != null ? detail + "\n" + about : about), plate))
                 {
                     open = mod;
@@ -205,6 +230,9 @@ namespace CommsTablet.Pages
                         break;
                     case Line.Setting:
                         DrawRow(mod, item.Row, new Rect(Left, ys[i], Width, h - RowGap));
+                        break;
+                    case Line.Action:
+                        DrawAction(mod, item.Action, new Rect(Left, ys[i], Width, h - RowGap));
                         break;
                 }
             }
@@ -282,6 +310,24 @@ namespace CommsTablet.Pages
             }
         }
 
+        /// <summary>One of the mod's one-time actions: a wide plate, its label over the line that says what it does.</summary>
+        private void DrawAction(OwnerMod mod, ModAction action, Rect r)
+        {
+            var key = $"action:{mod.Id}:{action.Index}";
+#if !PUBLIC_RELEASE
+            Texts[key] = action.Help == null ? action.Label : action.Label + "\n" + action.Help;
+            Areas[key] = r;
+#endif
+            var text = action.Help == null ? $"<b>{action.Label}</b>" : S.Two(action.Label, action.Help);
+            if (Button(key, r, text, S.Plate.Sized(27, 22)))
+            {
+                queuedMod = mod;
+                queuedAction = action;
+                notice = action.Label + "…";
+                S.Changed();
+            }
+        }
+
         /// <summary>A line of the Keys card: what the key does, and the key (or the text, or the value), read only.</summary>
         private void DrawKey(SettingRow row, Rect r)
         {
@@ -326,13 +372,15 @@ namespace CommsTablet.Pages
             Space,
             KeysTitle,
             Key,
+            Action,
         }
 
-        /// <summary>One line of a page: a heading, a setting, a space, the Keys card's title, or one of its keys.</summary>
+        /// <summary>One line of a page: a heading, a setting, a space, the Keys card's title, one of its keys, or a one-time action.</summary>
         private sealed class Item
         {
             internal Line Kind;
             internal SettingRow Row;
+            internal ModAction Action;
             internal string Text;
             /// <summary>Its height with the gap under it.</summary>
             internal float Height;
@@ -375,13 +423,14 @@ namespace CommsTablet.Pages
         }
 
         /// <summary>
-        /// A mod's rows as sections and pages: its settings in sections under
+        /// A mod's rows as sections and pages: its one-time actions first,
+        /// under "Equipment"; its settings in sections under
         /// their headings (an untitled one first when settings come before any
         /// heading; a section left with no settings dropped, as its heading
         /// would be), spaces kept but never at a page's top; then a Keys card
-        /// with every key and text. With three or more headings each section
-        /// starts a page and has a plate above the rows; else a heading never
-        /// ends a page.
+        /// with every key and text. With three or more headings among its
+        /// settings each section, Equipment the first, starts a page and has a
+        /// plate above the rows; else a heading never ends a page.
         /// </summary>
         private static Layout Build(OwnerMod mod)
         {
@@ -410,8 +459,11 @@ namespace CommsTablet.Pages
                 current.Add(row);
             }
             sections.RemoveAll(s => s.Value.All(r => r.Kind == SettingKind.Space));
+            var equipment = mod.Actions?.List() ?? new List<ModAction>();
             var layout = new Layout { Chips = sections.Count(s => s.Key != null) >= SectionsForChips };
             var titles = sections.Select(s => s.Key ?? "General").ToList();
+            if (equipment.Count > 0)
+                titles.Insert(0, EquipmentTitle);
             if (keys.Count > 0)
                 titles.Add(keys.All(k => k.IsKey) ? "Keys" : "Keys and text");
             layout.Sections.AddRange(titles);
@@ -420,6 +472,13 @@ namespace CommsTablet.Pages
             var room = Bottom - layout.Top;
 
             var lists = new List<List<Item>>();
+            if (equipment.Count > 0)
+            {
+                var items = new List<Item> { new Item { Kind = Line.Heading, Text = EquipmentTitle, Height = HeadingHeight } };
+                foreach (var action in equipment)
+                    items.Add(new Item { Kind = Line.Action, Action = action, Height = Mathf.Min(room, ActionHeight + RowGap) });
+                lists.Add(items);
+            }
             foreach (var section in sections)
             {
                 var items = new List<Item>();
