@@ -74,7 +74,9 @@ namespace CommsTablet.Tablet
                 trainHighlighter.transform.SetParent(null);
             }
             // Deleted or returned to the pool: let the car go before the highlighter goes with it.
-            SingletonBehaviour<CarSpawner>.Instance.CarAboutToBeDeleted += CarDeleted;
+            var spawner = SingletonBehaviour<CarSpawner>.Instance;
+            if (spawner != null)
+                spawner.CarAboutToBeDeleted += CarDeleted;
             if (validMaterial != null)
             {
                 // The chosen car's box in amber. The highlight shader ("Teleport Marker")
@@ -140,10 +142,11 @@ namespace CommsTablet.Tablet
 
         protected virtual void OnDestroy()
         {
-            if (UnloadWatcher.isUnloading)
-                return;
-            SingletonBehaviour<CarSpawner>.Instance.CarAboutToBeDeleted -= CarDeleted;
-            Release(false);
+            var spawner = SingletonBehaviour<CarSpawner>.Instance;
+            if (spawner != null)
+                spawner.CarAboutToBeDeleted -= CarDeleted;
+            if (!UnloadWatcher.isUnloading)
+                Release(false);
             if (trainHighlighter != null) Destroy(trainHighlighter);
             if (selectedMaterial != null) Destroy(selectedMaterial);
         }
@@ -184,6 +187,8 @@ namespace CommsTablet.Tablet
                 car = TrainCar.Resolve(hit.transform.root);
             if (car != null && !Fits(car))
                 car = null;
+            if (pointed == null && !ReferenceEquals(pointed, null))
+                pointed = null;
             if (car != pointed)
             {
                 pointed = car;

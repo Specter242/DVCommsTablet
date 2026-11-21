@@ -63,6 +63,7 @@ namespace CommsTablet.Map
         private static PageBox content;
         private static int tabSet;
         private static RenderTexture texture;
+        private static int textureVersion;
         private static bool dirty = true;
         private static string settingsDrawn;
         private static float shownAt = -1000;
@@ -314,6 +315,7 @@ namespace CommsTablet.Map
                 }
                 texture = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32) { antiAliasing = 4, name = "CommsTablet map" };
                 texture.Create();
+                textureVersion++;
                 dirty = true;
             }
             var page = PageOf(book);
@@ -324,13 +326,15 @@ namespace CommsTablet.Map
             var settings = SettingsOf(page, network);
             if (!dirty && settings == settingsDrawn && locoHash == locoHashDrawn)
                 return;
+            var rendered = BookletRenderer.Render(page, view.CenterX, -view.CenterY, view.Scale, texture, px => Overlay(page, network, px));
+            if (!rendered)
+                return;
             dirty = false;
             settingsDrawn = settings;
             locoHashDrawn = locoHash;
-            var rendered = BookletRenderer.Render(page, view.CenterX, -view.CenterY, view.Scale, texture, px => Overlay(page, network, px));
+            textureVersion++;
 #if !PUBLIC_RELEASE
-            if (rendered)
-                Renders++;
+            Renders++;
 #endif
         }
 
@@ -588,7 +592,7 @@ namespace CommsTablet.Map
             var page = PageOf(book);
             Box(S(0, 0, MapW, MapH), Well);
             if (texture != null && placed)
-                Picture(S(0, 0, MapW, MapH), texture);
+                Picture(S(0, 0, MapW, MapH), texture, textureVersion);
             if (page == null)
             {
                 PressArea = Rect.zero;

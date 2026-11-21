@@ -13,10 +13,24 @@ namespace CommsTablet.Pages
         private const int Locos = 0, Cars = 1;
         private static readonly string[] SectionNames = { "LOCOS", "CARS" };
 
-        // Each tile's index in the spawner's list; for the car types' level, the type's index.
-        private readonly List<int> indexes = new List<int>();
+        private readonly struct Entry
+        {
+            internal readonly TrainCarType_v2 Type;
+            internal readonly TrainCarLivery Livery;
+
+            internal Entry(TrainCarType_v2 type, TrainCarLivery livery)
+            {
+                Type = type;
+                Livery = livery;
+            }
+        }
+
+        // Each tile's livery or car type identity, instead of live spawner indices.
+        private readonly List<Entry> entries = new List<Entry>();
         private TrainCarType_v2 openType;
         private (int category, TrainCarType_v2 type, TrainCarLivery livery)? remembered;
+        // What the list left out on its last refresh, each "name (why)".
+        private readonly List<string> locked = new List<string>();
 
         internal SpawnPage(TabletRadio radio) : base(radio) { }
 
@@ -29,6 +43,28 @@ namespace CommsTablet.Pages
             && Session.CheatMode && Radios.Allow(r => r.carSpawnerControl);
 
         internal override string[] Sections => SectionNames;
+
+        internal override string Hint => locked.Count == 0 ? null
+            : locked.Count == 1 ? "Locked: " + locked[0]
+            : $"Locked: {locked[0]} and {locked.Count - 1} more";
+
+        /// <summary>Why the spawner leaves a livery out: the license it needs, else its garage (the game's IsCarLiveryUnlocked, in its order).</summary>
+        private static string WhyLocked(TrainCarLivery livery)
+        {
+            try
+            {
+                var licenses = DV.Utils.SingletonBehaviour<LicenseManager>.Instance;
+                if (livery.requiredLicense != null && licenses != null && !licenses.IsGeneralLicenseAcquired(livery.requiredLicense))
+                    return "needs its license";
+            }
+            catch (System.Exception)
+            {
+                // Read as a garage below.
+            }
+            return "garage locked";
+        }
+
+        private void Locked(string name, TrainCarLivery livery) => locked.Add($"{name} ({WhyLocked(livery)})");
 
         internal override void SelectSection(int section)
         {
@@ -45,13 +81,27 @@ namespace CommsTablet.Pages
                     return -1;
                 var state = GameMembers.GetSpawnState(spawner);
                 if (state == GameMembers.SpawnPickLoco || (state == GameMembers.SpawnPickDestination && CategoryOf(spawner) == GameMembers.SpawnLoco))
-                    return Section == Locos ? indexes.IndexOf(GameMembers.SpawnLocoIndex(spawner)) : -1;
+                {
+                    if (Section != Locos)
+                        return -1;
+                    var locos = GameMembers.SpawnLocos(spawner);
+                    var index = GameMembers.SpawnLocoIndex(spawner);
+                    var current = locos != null && index >= 0 && index < locos.Count ? locos[index] : null;
+                    return current == null ? -1 : entries.FindIndex(e => e.Livery == current);
+                }
                 if (state != GameMembers.SpawnPickCarLivery && state != GameMembers.SpawnPickDestination || Section != Cars)
                     return -1;
                 var type = TypeAt(spawner, GameMembers.SpawnCarTypeIndex(spawner));
                 if (openType == null)
-                    return indexes.IndexOf(GameMembers.SpawnCarTypeIndex(spawner));
-                return type == openType ? indexes.IndexOf(GameMembers.SpawnCarLiveryIndex(spawner)) : -1;
+                    return type == null ? -1 : entries.FindIndex(e => e.Type == type);
+                if (type != openType || type == null)
+                    return -1;
+                var map = GameMembers.SpawnCarLiveries(spawner);
+                if (map == null || !map.TryGetValue(type, out var liveries) || liveries == null)
+                    return -1;
+                var liveryIndex = GameMembers.SpawnCarLiveryIndex(spawner);
+                var currentLivery = liveryIndex >= 0 && liveryIndex < liveries.Count ? liveries[liveryIndex] : null;
+                return currentLivery == null ? -1 : entries.FindIndex(e => e.Livery == currentLivery);
             }
         }
 
@@ -68,71 +118,98 @@ namespace CommsTablet.Pages
         internal override void Refresh()
         {
             tiles.Clear();
-            indexes.Clear();
+            entries.Clear();
+            locked.Clear();
             var spawner = Radio.Spawner;
             if (spawner == null || !GameMembers.SpawnResolves)
                 return;
             if (Section == Locos)
             {
                 var locos = GameMembers.SpawnLocos(spawner);
+                if (locos == null)
+                    return;
                 for (var i = 0; i < locos.Count; i++)
-                    if (locos[i] != null && GameMembers.SpawnLiveryUnlocked(locos[i]))
-                        Add(i, new Tile(LiveryName(locos[i]), locos[i].icon, locos[i]));
+                {
+                    if (locos[i] == null)
+                        continue;
+                    if (GameMembers.SpawnLiveryUnlocked(locos[i]))
+                        Add(new Entry(null, locos[i]), new Tile(LiveryName(locos[i]), locos[i].icon, locos[i]));
+                    else
+                        Locked(LiveryName(locos[i]), locos[i]);
+                }
                 return;
             }
             var types = GameMembers.SpawnCarTypes(spawner);
             if (openType == null)
             {
+                if (types == null)
+                    return;
                 for (var i = 0; i < types.Count; i++)
                 {
                     var type = types[i];
-                    if (type == null || !GameMembers.SpawnCarTypeUnlocked(type))
+                    if (type == null)
                         continue;
-                    var first = Unlocked(spawner, type).Select(p => p.livery).FirstOrDefault();
-                    Add(i, new Tile(LocalizationAPI.L(type.localizationKey), first != null ? first.icon : null, first));
+                    if (!GameMembers.SpawnCarTypeUnlocked(type))
+                    {
+                        var sample = type.liveries?.FirstOrDefault(l => l != null);
+                        if (sample != null)
+                            Locked(LocalizationAPI.L(type.localizationKey), sample);
+                        continue;
+                    }
+                    var first = Unlocked(spawner, type).FirstOrDefault();
+                    Add(new Entry(type, null), new Tile(LocalizationAPI.L(type.localizationKey), first != null ? first.icon : null, first));
                 }
                 return;
             }
-            Add(-1, new Tile("BACK", null, back: true));
-            foreach (var (index, livery) in Unlocked(spawner, openType))
-                Add(index, new Tile(LiveryName(livery), livery.icon, livery));
+            Add(default, new Tile("BACK", null, back: true));
+            foreach (var livery in Unlocked(spawner, openType))
+                Add(new Entry(openType, livery), new Tile(LiveryName(livery), livery.icon, livery));
+            var map = GameMembers.SpawnCarLiveries(spawner);
+            if (map != null && map.TryGetValue(openType, out var all) && all != null)
+                foreach (var livery in all)
+                    if (livery != null && !GameMembers.SpawnLiveryUnlocked(livery))
+                        Locked(LiveryName(livery), livery);
         }
 
-        private void Add(int index, Tile tile)
+        private void Add(Entry entry, Tile tile)
         {
-            indexes.Add(index);
+            entries.Add(entry);
             tiles.Add(tile);
         }
 
-        /// <summary>A car type's unlocked liveries, with their indexes in the spawner's list for it.</summary>
-        private static IEnumerable<(int index, TrainCarLivery livery)> Unlocked(CommsRadioCarSpawner spawner, TrainCarType_v2 type)
+        /// <summary>A car type's unlocked liveries.</summary>
+        private static IEnumerable<TrainCarLivery> Unlocked(CommsRadioCarSpawner spawner, TrainCarType_v2 type)
         {
-            if (!GameMembers.SpawnCarLiveries(spawner).TryGetValue(type, out var liveries))
+            var map = GameMembers.SpawnCarLiveries(spawner);
+            if (type == null || map == null || !map.TryGetValue(type, out var liveries) || liveries == null)
                 yield break;
             for (var i = 0; i < liveries.Count; i++)
                 if (liveries[i] != null && GameMembers.SpawnLiveryUnlocked(liveries[i]))
-                    yield return (i, liveries[i]);
+                    yield return liveries[i];
         }
 
         internal override void Press(int tile)
         {
             var spawner = Radio.Spawner;
-            if (tile < 0 || tile >= tiles.Count || spawner == null)
+            if (tile < 0 || tile >= entries.Count || spawner == null || !GameMembers.SpawnResolves)
                 return;
             Notice = null;
             if (Section == Locos)
             {
-                var locos = GameMembers.SpawnLocos(spawner);
-                Choose(GameMembers.SpawnLoco, null, locos[indexes[tile]]);
+                var livery = entries[tile].Livery;
+                if (livery != null)
+                    Choose(GameMembers.SpawnLoco, null, livery);
                 return;
             }
             if (openType == null)
             {
-                var type = TypeAt(spawner, indexes[tile]);
+                var type = entries[tile].Type;
+                if (type == null)
+                    return;
                 var liveries = Unlocked(spawner, type).ToList();
                 if (liveries.Count == 1)
                 {
-                    Choose(GameMembers.SpawnCar, type, liveries[0].livery);
+                    Choose(GameMembers.SpawnCar, type, liveries[0]);
                     return;
                 }
                 openType = type;
@@ -147,7 +224,9 @@ namespace CommsTablet.Pages
                 Refresh();
                 return;
             }
-            Choose(GameMembers.SpawnCar, openType, GameMembers.SpawnCarLiveries(spawner)[openType][indexes[tile]]);
+            var chosen = entries[tile].Livery;
+            if (chosen != null)
+                Choose(GameMembers.SpawnCar, openType, chosen);
         }
 
         private void Choose(int category, TrainCarType_v2 type, TrainCarLivery livery)
@@ -159,7 +238,8 @@ namespace CommsTablet.Pages
                 // Indexes resolved afresh in the spawner's lists, which the tablet does not own.
                 if (category == GameMembers.SpawnLoco)
                 {
-                    var index = GameMembers.SpawnLocos(spawner).IndexOf(livery);
+                    var locos = GameMembers.SpawnLocos(spawner);
+                    var index = locos != null ? locos.IndexOf(livery) : -1;
                     if (index < 0)
                         return false;
                     GameMembers.SetSpawnCategory(spawner, GameMembers.SpawnLoco);
@@ -168,8 +248,10 @@ namespace CommsTablet.Pages
                     spawner.OnUse();                                  // → PickLoco
                     return GameMembers.GetSpawnState(spawner) == GameMembers.SpawnPickLoco && GameMembers.SpawnLocoIndex(spawner) == index;
                 }
-                var typeIndex = GameMembers.SpawnCarTypes(spawner).IndexOf(type);
-                if (typeIndex < 0 || !GameMembers.SpawnCarLiveries(spawner).TryGetValue(type, out var liveries))
+                var types = GameMembers.SpawnCarTypes(spawner);
+                var map = GameMembers.SpawnCarLiveries(spawner);
+                var typeIndex = type != null && types != null ? types.IndexOf(type) : -1;
+                if (typeIndex < 0 || map == null || !map.TryGetValue(type, out var liveries) || liveries == null)
                     return false;
                 var liveryIndex = liveries.IndexOf(livery);
                 if (liveryIndex < 0)
@@ -201,12 +283,13 @@ namespace CommsTablet.Pages
             {
                 var locos = GameMembers.SpawnLocos(spawner);
                 var index = GameMembers.SpawnLocoIndex(spawner);
-                remembered = index >= 0 && index < locos.Count ? (GameMembers.SpawnLoco, null, locos[index]) : ((int, TrainCarType_v2, TrainCarLivery)?)null;
+                remembered = locos != null && index >= 0 && index < locos.Count ? (GameMembers.SpawnLoco, null, locos[index]) : ((int, TrainCarType_v2, TrainCarLivery)?)null;
                 return;
             }
             var type = TypeAt(spawner, GameMembers.SpawnCarTypeIndex(spawner));
             var liveryIndex = GameMembers.SpawnCarLiveryIndex(spawner);
-            remembered = type != null && GameMembers.SpawnCarLiveries(spawner).TryGetValue(type, out var liveries) && liveryIndex >= 0 && liveryIndex < liveries.Count
+            var map = GameMembers.SpawnCarLiveries(spawner);
+            remembered = type != null && map != null && map.TryGetValue(type, out var liveries) && liveries != null && liveryIndex >= 0 && liveryIndex < liveries.Count
                 ? (GameMembers.SpawnCar, type, liveries[liveryIndex]) : ((int, TrainCarType_v2, TrainCarLivery)?)null;
         }
 

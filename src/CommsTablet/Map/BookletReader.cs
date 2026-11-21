@@ -38,9 +38,13 @@ namespace CommsTablet.Map
         /// <summary>The game's tiles and touch cells as it draws its books: 50 units on the page.</summary>
         internal const float StockCell = 50f;
 
+        private const float RetryDelaySeconds = 15f;
+
         private static readonly Regex PageName = new Regex(@"^\[(\w+)-(\w+)\]$", RegexOptions.CultureInvariant);
 
         private static TrackNetwork readFor;
+        private static TrackNetwork failedFor;
+        private static float nextReadAttempt;
         private static Booklet booklet;
         private static List<SchematicSource> sources;
         private static GameObject holder;
@@ -70,27 +74,42 @@ namespace CommsTablet.Map
                 return null;
             if (readFor == network)
                 return booklet;
+            if (failedFor == network && Time.unscaledTime < nextReadAttempt)
+                return null;
             Forget();
-            readFor = network;
             var watch = Stopwatch.StartNew();
             try
             {
-                sources = ReadPages(network, out var problem);
-                if (sources == null)
+                var readSources = ReadPages(network, out var problem);
+                if (readSources == null)
                 {
                     Main.Mod?.Logger.Warning($"Map: the station booklet was not read: {problem}");
+                    CleanupFailed(network);
                     return null;
                 }
                 var read = watch.ElapsedMilliseconds;
-                booklet = Booklet.Build(sources, network.Graph, t => network.Tracks[t].name);
+                var built = Booklet.Build(readSources, network.Graph, t => network.Tracks[t].name);
+                sources = readSources;
+                booklet = built;
+                readFor = network;
+                failedFor = null;
+                nextReadAttempt = 0f;
                 Main.Mod?.Logger.Log($"Map: booklet of {booklet.Stations.Count} stations, {sources.Count} pages, read in {read} ms, matched in {watch.ElapsedMilliseconds - read} ms: {booklet.Stats}");
+                return booklet;
             }
             catch (Exception e)
             {
                 Main.Mod?.Logger.LogException("Map: the station booklet was not read", e);
-                booklet = null;
+                CleanupFailed(network);
+                return null;
             }
-            return booklet;
+        }
+
+        private static void CleanupFailed(TrackNetwork network)
+        {
+            Forget();
+            failedFor = network;
+            nextReadAttempt = Time.unscaledTime + RetryDelaySeconds;
         }
 
         /// <summary>Lets the booklet and its copies go: at unload, or before reading another world's.</summary>
@@ -102,6 +121,8 @@ namespace CommsTablet.Map
             holder = null;
             BookletCopy = RouteCopy = null;
             readFor = null;
+            failedFor = null;
+            nextReadAttempt = 0f;
             booklet = null;
             sources = null;
         }
@@ -182,7 +203,10 @@ namespace CommsTablet.Map
             var copy = Object.Instantiate(prefab, under);
             var render = copy.GetComponent<StaticPagesRender>();
             if (render == null)
+            {
+                Object.Destroy(copy);
                 return null;
+            }
             try
             {
                 GameMembers.RenderPageStep?.Invoke(render, null);

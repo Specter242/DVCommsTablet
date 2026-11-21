@@ -122,6 +122,8 @@ namespace CommsTablet.Books
                 return null;
             if (plan != null && plan.Registry == registry)
                 return plan;
+            if (SingletonBehaviour<LevelInfo>.Instance?.junctionData == null)
+                return null;
             plan = new Plan { Registry = registry };
             try
             {
@@ -145,18 +147,106 @@ namespace CommsTablet.Books
             var stations = level?.junctionPageDataStations;
             if (stations == null)
                 return "no stock booklet data";
-            // The pages drawn on must be where the drawing has them.
+            // The pages drawn on must be where the drawing has them, with every container and prototype present.
             var render = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.SchematicMapRender)?.GetComponent<StaticPagesRender>();
             if (render == null || render.staticPages.Count != stations.Length)
                 return "the booklet's render and switch data disagree";
-            foreach (var pg in Data.pages)
-                if (pg.index >= render.staticPages.Count || render.staticPages[pg.index].gameObject.name != pg.name)
-                    return $"page {pg.index} is not {pg.name}";
-            if (Data.insert.copyOf >= render.staticPages.Count)
-                return "no page to copy for the hump yard";
+            if (!TryCollectAssets(render.staticPages, null, out _, out _, out var assetProblem))
+                return assetProblem;
             var wanted = Data.pages.SelectMany(pg => pg.switches).Concat(Data.insert.switches)
                 .Select(kv => new KeyValuePair<string, (string, float[])>(kv.Key, (kv.Value.id, kv.Value.pos)));
             return p.Found.Find(p.Registry, Data.doubleTrackTotal, wanted);
+        }
+
+        private static bool TryCollectAssets(IList<StaticPageTemplatePaper> pages, IList<StaticPageTemplatePaper> fallbackPages,
+            out Dictionary<string, GameObject> prototypes, out GameObject badge, out string problem)
+        {
+            prototypes = new Dictionary<string, GameObject>();
+            badge = null;
+            problem = null;
+            if (pages == null)
+            {
+                problem = "no booklet pages";
+                return false;
+            }
+            foreach (var pg in Data.pages)
+            {
+                if (pg.index < 0 || pg.index >= pages.Count || pages[pg.index] == null || pages[pg.index].gameObject.name != pg.name)
+                {
+                    problem = $"page {pg.index} is not {pg.name}";
+                    return false;
+                }
+                if (pages[pg.index].transform.Find(DoubleTrackBooks.WrapperPath + "/SMap") == null)
+                {
+                    problem = $"page {pg.name} has no SMap container";
+                    return false;
+                }
+            }
+            var ins = Data.insert;
+            if (ins == null || ins.copyOf < 0 || ins.copyOf >= pages.Count || pages[ins.copyOf] == null || ins.after < 0 || ins.after >= pages.Count)
+            {
+                problem = "no page to copy for the hump yard";
+                return false;
+            }
+            var copyWrapper = pages[ins.copyOf].transform.Find(DoubleTrackBooks.WrapperPath);
+            if (copyWrapper == null || copyWrapper.Find("SMap") == null)
+            {
+                problem = "hump yard source page has no SMap container";
+                return false;
+            }
+
+            var foundPrototypes = new Dictionary<string, GameObject>();
+            GameObject foundBadge = null;
+
+            void Scan(IList<StaticPageTemplatePaper> list)
+            {
+                if (list == null)
+                    return;
+                foreach (var page in list)
+                {
+                    if (page == null)
+                        continue;
+                    var smap = page.transform.Find(DoubleTrackBooks.WrapperPath + "/SMap");
+                    if (smap == null)
+                        continue;
+                    foreach (Transform t in smap)
+                    {
+                        var s = SpriteOf(t);
+                        if (s == null)
+                            continue;
+                        if (TrackSprites.Contains(s) && !foundPrototypes.ContainsKey(s))
+                            foundPrototypes[s] = t.gameObject;
+                        if (s == "SM-ID" && foundBadge == null && t.Find("Type-S") != null)
+                            foundBadge = t.gameObject;
+                    }
+                }
+            }
+
+            Scan(pages);
+            Scan(fallbackPages);
+            var route = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.RouteMapRender)?.GetComponent<StaticPagesRender>();
+            if (route != null)
+                foreach (var img in route.staticPages.SelectMany(sp => sp.GetComponentsInChildren<Image>(true)))
+                    if (img.sprite != null && TrackSprites.Contains(img.sprite.name) && !foundPrototypes.ContainsKey(img.sprite.name))
+                        foundPrototypes[img.sprite.name] = img.gameObject;
+
+            var missing = Data.pages.SelectMany(pg => pg.tiles).Concat(ins.tiles)
+                .Select(t => t.sprite).Distinct()
+                .Where(s => string.IsNullOrEmpty(s) || !foundPrototypes.ContainsKey(s))
+                .ToList();
+            if (missing.Count > 0)
+            {
+                problem = $"booklet is missing required tile sprites: {string.Join(", ", missing)}";
+                return false;
+            }
+            if (ins.badges != null && ins.badges.Count > 0 && foundBadge == null)
+            {
+                problem = "booklet is missing SM-ID badge prototype";
+                return false;
+            }
+            prototypes = foundPrototypes;
+            badge = foundBadge;
+            return true;
         }
 
         private static bool On
@@ -178,15 +268,21 @@ namespace CommsTablet.Books
             if (!On)
                 return pages;
             var list = pages.ToList();
+            var ins = Data.insert;
+            if (ins == null || ins.after < 0 || ins.after >= list.Count)
+            {
+                DoubleTrackBooks.Warn($"booklet data: cannot insert after page {ins?.after} of {list.Count}");
+                return pages;
+            }
             foreach (var pg in Data.pages)
             {
-                if (pg.index >= list.Count)
+                if (pg.index < 0 || pg.index >= list.Count)
                     continue;
                 var page = list[pg.index];
-                page.junctionDataCoords = page.junctionDataCoords.Concat(pg.switches.Select(kv => Coord(kv.Key, kv.Value))).ToList();
+                var existing = page.junctionDataCoords ?? new List<JunctionGeneratedDataRuntime.DataCoord>();
+                page.junctionDataCoords = existing.Concat(pg.switches.Select(kv => Coord(kv.Key, kv.Value))).ToList();
                 list[pg.index] = page;
             }
-            var ins = Data.insert;
             list.Insert(ins.after + 1, new JunctionGeneratedDataRuntime.JunctionPageData
             {
                 categoryId = list[ins.after].categoryId,
@@ -296,8 +392,8 @@ namespace CommsTablet.Books
                     if (!__instance.gameObject.name.StartsWith("MapSchematicStaticRender", StringComparison.Ordinal) ||
                         __instance.GetComponent<Drawn>() != null || !On)
                         return;
-                    Draw(__instance);
-                    __instance.gameObject.AddComponent<Drawn>();
+                    if (Draw(__instance))
+                        __instance.gameObject.AddComponent<Drawn>();
                 }
                 catch (Exception e)
                 {
@@ -317,34 +413,15 @@ namespace CommsTablet.Books
         private static Vector2Int CellOf(RectTransform t) =>
             new Vector2Int(Mathf.RoundToInt(t.anchoredPosition.x / 50f), Mathf.RoundToInt(t.anchoredPosition.y / 50f));
 
-        private static void Draw(StaticPagesRender render)
+        private static bool Draw(StaticPagesRender render)
         {
             var pages = render.staticPages;
-            // Prototypes: a stock tile of each sprite, and a stock track badge.
-            var prototypes = new Dictionary<string, GameObject>();
-            GameObject badge = null;
-            foreach (var page in pages)
+            var stockPages = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.SchematicMapRender)?.GetComponent<StaticPagesRender>()?.staticPages;
+            if (!TryCollectAssets(pages, stockPages, out var prototypes, out var badge, out var problem))
             {
-                var smap = page.transform.Find(DoubleTrackBooks.WrapperPath + "/SMap");
-                if (smap == null)
-                    continue;
-                foreach (Transform t in smap)
-                {
-                    var s = SpriteOf(t);
-                    if (s == null)
-                        continue;
-                    if (TrackSprites.Contains(s) && !prototypes.ContainsKey(s))
-                        prototypes[s] = t.gameObject;
-                    if (s == "SM-ID" && badge == null && t.Find("Type-S") != null)
-                        badge = t.gameObject;
-                }
+                DoubleTrackBooks.Warn($"booklet pages: {problem}; leaving booklet unchanged");
+                return false;
             }
-            // The booklet has no crossover tile of its own: the route map's.
-            var route = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.RouteMapRender)?.GetComponent<StaticPagesRender>();
-            if (route != null)
-                foreach (var img in route.staticPages.SelectMany(sp => sp.GetComponentsInChildren<Image>(true)))
-                    if (img.sprite != null && TrackSprites.Contains(img.sprite.name) && !prototypes.ContainsKey(img.sprite.name))
-                        prototypes[img.sprite.name] = img.gameObject;
             var made = 0;
             var hidden = 0;
             foreach (var pg in Data.pages)
@@ -410,6 +487,7 @@ namespace CommsTablet.Books
             }
             pages.Insert(ins.after + 1, copy.GetComponent<StaticPageTemplatePaper>());
             DoubleTrackBooks.Log($"booklet pages: {hidden} stock tiles hidden, {made} drawn on {Data.pages.Count} pages; page {copy.name} added at {ins.after + 1} of {pages.Count}");
+            return true;
         }
 
         private static string SourceStation(StaticPageTemplatePaper page)

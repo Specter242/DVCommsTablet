@@ -67,6 +67,8 @@ namespace CommsTablet.Books
                 return "no railway yet";
             if (decidedFor == registry)
                 return standDown;
+            if (SingletonBehaviour<LevelInfo>.Instance?.junctionData == null)
+                return "no junction data yet";
             decidedFor = registry;
             try
             {

@@ -277,15 +277,25 @@ namespace CommsTablet.Tablet
         private void OnGrabStart(ControlImplBase _)
         {
             var inventory = SingletonBehaviour<InventoryViewBase>.Instance;
-            if (inventory != null) inventory.inventoryUI.OpenedOrClosed += BigInventoryToggled;
+            if (inventory != null && inventory.inventoryUI != null)
+            {
+                inventory.inventoryUI.OpenedOrClosed -= BigInventoryToggled;
+                inventory.inventoryUI.OpenedOrClosed += BigInventoryToggled;
+            }
             CheckState();
         }
 
         private void OnGrabEnd(ControlImplBase _)
         {
-            var inventory = SingletonBehaviour<InventoryViewBase>.Instance;
-            if (inventory != null) inventory.inventoryUI.OpenedOrClosed -= BigInventoryToggled;
+            UnsubscribeInventory();
             CheckState();
+        }
+
+        private void UnsubscribeInventory()
+        {
+            var inventory = SingletonBehaviour<InventoryViewBase>.Instance;
+            if (inventory != null && inventory.inventoryUI != null)
+                inventory.inventoryUI.OpenedOrClosed -= BigInventoryToggled;
         }
 
         private void BigInventoryToggled(bool _) => CheckState();
@@ -552,6 +562,7 @@ namespace CommsTablet.Tablet
 
         private void OnDisable()
         {
+            UnsubscribeInventory();
             if (UnloadWatcher.isUnloading)
                 return;
             // Stashed, mounted, or dropped out of the world: as the radio, the mode stops.
@@ -566,6 +577,7 @@ namespace CommsTablet.Tablet
 
         private void OnDestroy()
         {
+            UnsubscribeInventory();
             if (initializing != null && SingletonBehaviour<CoroutineManager>.Instance != null)
                 SingletonBehaviour<CoroutineManager>.Instance.Stop(initializing);
             if (Summon != null)

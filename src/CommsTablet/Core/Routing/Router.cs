@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using CommsTablet.Core.Tracks;
 
 namespace CommsTablet.Core.Routing
@@ -92,11 +93,26 @@ namespace CommsTablet.Core.Routing
         /// <summary>
         /// Whether cars stand on a track between two offsets, so a train
         /// can't run through there (not the train's own, nor trains on the
-        /// move, which will likely clear). When the goal itself lies among
-        /// cars (a coupling's, clicked on them), the last approach to it
-        /// isn't asked: it is meant to meet them. Null for none.
+        /// move, which will likely clear). Null for none.
         /// </summary>
         public Func<int, double, double, bool> Blocked;
+
+        /// <summary>
+        /// Optional exact span (low, high) on the goal track of a car the route
+        /// is explicitly allowed to meet at the goal (e.g. coupling). All
+        /// intervening track between entry and the car's near edge is still
+        /// checked so earlier or touching cars still block the approach.
+        /// </summary>
+        public (double Low, double High)? GoalCarSpan;
+
+        /// <summary>
+        /// When set (a siding/track destination with no explicit offset),
+        /// entering the goal track from either end stops this many meters in
+        /// (capped at track length minus end clearance) rather than at
+        /// <see cref="Goal"/>'s offset. Both approach occupancy and the final
+        /// route piece use that stop.
+        /// </summary>
+        public double? GoalIntoTrack;
     }
 
     public enum RouteFailure
@@ -105,6 +121,7 @@ namespace CommsTablet.Core.Routing
         NoPath,
         GoalUnderTrain,
         BadTrack,
+        Cancelled,
     }
 
     /// <summary>
@@ -137,6 +154,29 @@ namespace CommsTablet.Core.Routing
 
         /// <summary>How far past a train's leading coupler a blocked check starts at the outset, m.</summary>
         private const double StartMargin = 0.5;
+
+        /// <summary>Clearance outside a permitted goal car's span when checking intervening approach track, m.</summary>
+        private const double GoalEdgeMargin = 0.01;
+
+        /// <summary>Clearance left before a siding's far end when stopping a train inside a track-level goal, m.</summary>
+        public const double GoalEndClearance = 10;
+
+        /// <summary>
+        /// Where a train entering a track of <paramref name="trackLength"/> from
+        /// <paramref name="entryOffset"/> stops when asked to pull
+        /// <paramref name="into"/> meters into it (matching <c>AheadPath.Arrival</c>),
+        /// or <paramref name="fallback"/> if <paramref name="entryOffset"/> is not an end.
+        /// </summary>
+        public static double SidingStop(double trackLength, double entryOffset, double into, double fallback)
+        {
+            var atStart = Math.Abs(entryOffset) < 1e-6;
+            var atEnd = Math.Abs(entryOffset - trackLength) < 1e-6;
+            if (!atStart && !atEnd)
+                return fallback;
+            var sign = atStart ? 1 : -1;
+            var room = Math.Max(0, trackLength - GoalEndClearance);
+            return entryOffset + sign * Math.Min(room, Math.Max(0, into));
+        }
 
         private readonly TrackGraph graph;
 
@@ -176,7 +216,9 @@ namespace CommsTablet.Core.Routing
             public bool Closed;
         }
 
-        public Route Find(RouteRequest request) => Find(request, out _);
+        public Route Find(RouteRequest request) => Find(request, out _, CancellationToken.None);
+
+        public Route Find(RouteRequest request, out RouteFailure failure) => Find(request, out failure, CancellationToken.None);
 
         // A search node: the leading end at one end of a track, about to leave it,
         // and which end of the consist that is: ((track * 2 + end) << 1) | leader.
@@ -188,10 +230,15 @@ namespace CommsTablet.Core.Routing
 
         private static ConsistEnd LeaderOf(int node) => (ConsistEnd)(node & 1);
 
-        public Route Find(RouteRequest request, out RouteFailure failure)
+        public Route Find(RouteRequest request, out RouteFailure failure, CancellationToken cancellationToken)
         {
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
+            if (cancellationToken.IsCancellationRequested)
+            {
+                failure = RouteFailure.Cancelled;
+                return null;
+            }
             System.Threading.Interlocked.Increment(ref searches);
             if (!ValidPosition(request.EndA) || !ValidPosition(request.EndB) || !ValidPosition(request.Goal))
             {
@@ -203,18 +250,46 @@ namespace CommsTablet.Core.Routing
             var states = new Dictionary<int, NodeState>();
             var reversalRuns = new Dictionary<int, Run>();
             var runCache = new Dictionary<int, Run>();
-            var runs = new RunSearch(request);
+            var runs = new RunSearch(request, cancellationToken);
             var backOnto = new Run[2];
             var pullsClear = new Dictionary<int, (Run Pull, List<RoutePiece> Back, double Room)>();
             var heap = new MinHeap();
             var goalTrack = request.Goal.Track;
+            var goalLength = graph.Length(goalTrack);
             var goalStart = graph.EndPoint(goalTrack, TrackEnd.Start);
             var goalEnd = graph.EndPoint(goalTrack, TrackEnd.End);
-            var goalFromStart = request.Goal.Offset;
-            var goalFromEnd = graph.Length(goalTrack) - request.Goal.Offset;
+            double GoalStop(double entryOffset) =>
+                request.GoalIntoTrack.HasValue
+                    ? SidingStop(goalLength, entryOffset, request.GoalIntoTrack.Value, request.Goal.Offset)
+                    : request.Goal.Offset;
+            var goalFromStart = GoalStop(0);
+            var goalFromEnd = goalLength - GoalStop(goalLength);
             var blocked = request.Blocked;
-            var goalAmongCars = blocked != null && blocked(goalTrack, request.Goal.Offset - 0.5, request.Goal.Offset + 0.5);
-            bool ApproachBlocked(int track, double from) => blocked != null && !goalAmongCars && blocked(track, from, request.Goal.Offset);
+            double goalSpanLow = request.Goal.Offset, goalSpanHigh = request.Goal.Offset;
+            var hasGoalCarSpan = false;
+            if (blocked != null && request.GoalCarSpan.HasValue)
+            {
+                var span = request.GoalCarSpan.Value;
+                goalSpanLow = Math.Max(0, Math.Min(span.Low, span.High) - GoalEdgeMargin);
+                goalSpanHigh = Math.Min(goalLength, Math.Max(span.Low, span.High) + GoalEdgeMargin);
+                hasGoalCarSpan = true;
+            }
+            bool ApproachBlocked(int track, double from, double to)
+            {
+                if (blocked == null)
+                    return false;
+                if (!hasGoalCarSpan)
+                    return blocked(track, from, to);
+                if (from <= to)
+                {
+                    if (to <= goalSpanLow || from >= goalSpanHigh)
+                        return blocked(track, from, to);
+                    return from < goalSpanLow && blocked(track, from, goalSpanLow);
+                }
+                if (to >= goalSpanHigh || from <= goalSpanLow)
+                    return blocked(track, to, from);
+                return from > goalSpanHigh && blocked(track, goalSpanHigh, from);
+            }
 
             double Shove(ConsistEnd leader, double meters) => request.ShovingEnd == leader ? meters * request.ShovingCost : 0;
 
@@ -250,12 +325,13 @@ namespace CommsTablet.Core.Routing
                 // Cars beyond the leading end bar that way off the track (a margin skips its own coupler), but not the goal short of them.
                 var ahead = p.Offset + (int)d * StartMargin;
                 var barred = blocked != null && toExit > StartMargin && blocked(p.Track, ahead, exitOffset);
-                if (p.Track == goalTrack && (request.Goal.Offset - p.Offset) * (int)d >= 0
+                var directStop = p.Track == goalTrack ? GoalStop(p.Offset) : request.Goal.Offset;
+                if (p.Track == goalTrack && (directStop - p.Offset) * (int)d >= 0
                     && (!request.GoalDirection.HasValue || request.GoalDirection.Value == d)
                     && (!request.LastLeader.HasValue || request.LastLeader.Value == end)
-                    && (Math.Abs(request.Goal.Offset - p.Offset) <= StartMargin || !ApproachBlocked(p.Track, ahead)))
+                    && (Math.Abs(directStop - p.Offset) <= StartMargin || !ApproachBlocked(p.Track, ahead, directStop)))
                 {
-                    var direct = Math.Abs(request.Goal.Offset - p.Offset);
+                    var direct = Math.Abs(directStop - p.Offset);
                     Relax(goalNode, direct + Shove(end, direct), -1, StepKind.Start, end, default);
                 }
                 // The node for this start: the leading end at the exit of its track.
@@ -392,6 +468,11 @@ namespace CommsTablet.Core.Routing
             var need = request.TrainLength + request.ReversalClearance;
             while (heap.Count > 0)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    failure = RouteFailure.Cancelled;
+                    return null;
+                }
                 var node = heap.Pop();
                 var state = states[node];
                 if (state.Closed)
@@ -419,9 +500,15 @@ namespace CommsTablet.Core.Routing
                     var inward = link.End.DirectionInto();
 
                     if (link.Track == goalTrack && (!request.GoalDirection.HasValue || request.GoalDirection.Value == inward)
-                        && (!request.LastLeader.HasValue || request.LastLeader.Value == leader)
-                        && !ApproachBlocked(link.Track, entry))
-                        Relax(goalNode, state.Cost + Math.Abs(request.Goal.Offset - entry) + Shove(leader, Math.Abs(request.Goal.Offset - entry)) + penalty, node, StepKind.Traverse, default, link);
+                        && (!request.LastLeader.HasValue || request.LastLeader.Value == leader))
+                    {
+                        var stop = GoalStop(entry);
+                        if (!ApproachBlocked(link.Track, entry, stop))
+                        {
+                            var dist = Math.Abs(stop - entry);
+                            Relax(goalNode, state.Cost + dist + Shove(leader, dist) + penalty, node, StepKind.Traverse, default, link);
+                        }
+                    }
 
                     if (blocked == null || !blocked(link.Track, 0, graph.Length(link.Track)))
                         Relax(Node(link.Track, link.End.Other(), leader), state.Cost + graph.Length(link.Track) + Shove(leader, graph.Length(link.Track)) + penalty, node, StepKind.Traverse, default, link);
@@ -447,6 +534,11 @@ namespace CommsTablet.Core.Routing
                 }
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                failure = RouteFailure.Cancelled;
+                return null;
+            }
             if (!states.TryGetValue(goalNode, out var goalState) || !goalState.Closed)
             {
                 failure = GoalUnderTrain(request) ? RouteFailure.GoalUnderTrain : RouteFailure.NoPath;
@@ -483,6 +575,7 @@ namespace CommsTablet.Core.Routing
         private sealed class RunSearch
         {
             public readonly RouteRequest Request;
+            public readonly CancellationToken CancellationToken;
 
             /// <summary>By track end entered: the shortest run found not to exist beyond it (a longer one doesn't either).</summary>
             public readonly Dictionary<int, double> NoRoom = new Dictionary<int, double>();
@@ -492,9 +585,10 @@ namespace CommsTablet.Core.Routing
             /// <summary>Set when a search gave up at its limits rather than at the end of track: what it didn't find isn't known to be missing.</summary>
             public bool CutShort;
 
-            public RunSearch(RouteRequest request)
+            public RunSearch(RouteRequest request, CancellationToken cancellationToken)
             {
                 Request = request;
+                CancellationToken = cancellationToken;
             }
         }
 
@@ -536,6 +630,11 @@ namespace CommsTablet.Core.Routing
 
         private bool Extend(int track, TrackEnd entered, double remaining, double travelled, int depth, Run run, RunSearch search)
         {
+            if (search.CancellationToken.IsCancellationRequested)
+            {
+                search.CutShort = true;
+                return false;
+            }
             var key = track * 2 + (int)entered;
             if (search.NoRoom.TryGetValue(key, out var known) && remaining >= known)
                 return false;
@@ -656,9 +755,12 @@ namespace CommsTablet.Core.Routing
 
             if (chain[0] == goalNode)
             {
-                AddPiece(new RoutePiece(start.Track, start.Offset, request.Goal.Offset));
+                var directStop = request.GoalIntoTrack.HasValue
+                    ? SidingStop(graph.Length(start.Track), start.Offset, request.GoalIntoTrack.Value, request.Goal.Offset)
+                    : request.Goal.Offset;
+                AddPiece(new RoutePiece(start.Track, start.Offset, directStop));
                 if (pieces.Count == 0)
-                    pieces.Add(new RoutePiece(start.Track, start.Offset, request.Goal.Offset));
+                    pieces.Add(new RoutePiece(start.Track, start.Offset, directStop));
                 legs.Add(new RouteLeg(pieces, switches, leader, false));
                 return new Route(legs);
             }
@@ -714,7 +816,10 @@ namespace CommsTablet.Core.Routing
 
                 if (node == goalNode)
                 {
-                    AddPiece(new RoutePiece(link.Track, entry, request.Goal.Offset));
+                    var stop = request.GoalIntoTrack.HasValue
+                        ? SidingStop(graph.Length(link.Track), entry, request.GoalIntoTrack.Value, request.Goal.Offset)
+                        : request.Goal.Offset;
+                    AddPiece(new RoutePiece(link.Track, entry, stop));
                     break;
                 }
 

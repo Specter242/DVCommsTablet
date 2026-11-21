@@ -50,6 +50,13 @@ namespace CommsTablet.Guests
             return false;
         }
 
+        /// <summary>Resets per-world failure and icon state for bound guests when unloading a world, keeping delegates bound.</summary>
+        internal static void ResetSession()
+        {
+            foreach (var guest in bound)
+                guest.ResetSession();
+        }
+
         private static void Scan()
         {
             Assembly[] assemblies;
@@ -255,6 +262,22 @@ namespace CommsTablet.Guests
             FailedIn = call;
 #endif
             Main.Mod?.Logger.Error($"Guest app '{Name}' ({Id}, from {Assembly}) threw in {call}; it is closed and hidden for the rest of the session: {error}");
+        }
+
+        /// <summary>
+        /// Clears per-world failure and cached icon reference so a fault in one
+        /// save does not permanently hide the guest in the next. The icon
+        /// texture is owned by the guest (guests cache or return asset
+        /// textures), so only the reference is dropped.
+        /// </summary>
+        internal void ResetSession()
+        {
+            Failed = false;
+#if !PUBLIC_RELEASE
+            FailedIn = null;
+#endif
+            iconAsked = false;
+            iconTexture = null;
         }
 
         // ---- Guarded calls -----------------------------------------------------

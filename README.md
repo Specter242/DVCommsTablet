@@ -54,6 +54,9 @@ guide). `src/CommsTablet/Guests/` is the host side.
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
 
+**0.1.5**: Spawn names what it leaves out, and why; performance
+improvements and bug fixes.
+
 **0.1.4**: Track Ahead, a new app (the grades, limits, switches, and
 times on the line ahead, to a job or a destination you set); a Map app on
 the home screen; mods' give buttons under Equipment in the Settings app,

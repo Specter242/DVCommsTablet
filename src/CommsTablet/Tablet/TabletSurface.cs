@@ -53,8 +53,10 @@ namespace CommsTablet.Tablet
         private readonly List<Image> images = new List<Image>();
         private readonly List<Text> texts = new List<Text>();
         private readonly List<RawImage> pictures = new List<RawImage>();
+        private readonly List<int> pictureRevisions = new List<int>();
         private int imageUsed, textUsed, pictureUsed, buttonUsed, order;
         private Rect? pending;
+        private bool changed;
 
         public TabletSurface(RectTransform root, ITabletButtons buttons)
         {
@@ -65,11 +67,12 @@ namespace CommsTablet.Tablet
         /// <summary>A press on button slot <paramref name="slot"/>, for the next pass: on the plate where that slot was put.</summary>
         public void Press(int slot) => pending = buttons.RectOf(slot);
 
-        /// <summary>Draws the canvas with <paramref name="draw"/>; a page that changes what it shows mid-pass is drawn again.</summary>
-        public void Run(Action draw)
+        /// <summary>Draws the canvas with <paramref name="draw"/>; a page that changes what it shows mid-pass is drawn again. Returns whether any visual changed.</summary>
+        public bool Run(Action draw)
         {
             TabletSkin.Build();
             Current = this;
+            changed = false;
             try
             {
                 for (var attempt = 0; attempt < 4; attempt++)
@@ -79,14 +82,16 @@ namespace CommsTablet.Tablet
                     {
                         draw();
                         End();
-                        return;
+                        return changed;
                     }
                     catch (Redraw)
                     {
                         pending = null;
+                        changed = true;
                     }
                 }
                 End();
+                return changed;
             }
             finally
             {
@@ -104,13 +109,22 @@ namespace CommsTablet.Tablet
         {
             for (var i = imageUsed; i < images.Count; i++)
                 if (images[i].enabled)
+                {
                     images[i].enabled = false;
+                    changed = true;
+                }
             for (var i = textUsed; i < texts.Count; i++)
                 if (texts[i].enabled)
+                {
                     texts[i].enabled = false;
+                    changed = true;
+                }
             for (var i = pictureUsed; i < pictures.Count; i++)
                 if (pictures[i].enabled)
+                {
                     pictures[i].enabled = false;
+                    changed = true;
+                }
             buttons.HideFrom(buttonUsed);
         }
 
@@ -129,24 +143,38 @@ namespace CommsTablet.Tablet
                 g = go.AddComponent<T>();
                 g.raycastTarget = false;
                 pool.Add(g);
+                changed = true;
             }
             used++;
-            g.enabled = true;
+            if (!g.enabled)
+            {
+                g.enabled = true;
+                changed = true;
+            }
             // Later draws lie over earlier ones.
             if (g.transform.GetSiblingIndex() != order)
+            {
                 g.transform.SetSiblingIndex(order);
+                changed = true;
+            }
             order++;
             return g;
         }
 
-        private static void Place(Graphic g, Rect r)
+        private void Place(Graphic g, Rect r)
         {
             var rt = g.rectTransform;
             var pos = new Vector2(r.x, -r.y);
             if (rt.anchoredPosition != pos)
+            {
                 rt.anchoredPosition = pos;
+                changed = true;
+            }
             if (rt.sizeDelta != r.size)
+            {
                 rt.sizeDelta = r.size;
+                changed = true;
+            }
         }
 
         public void Fill(Rect r, Color c) => Image(r, TabletSkin.White, c);
@@ -166,20 +194,35 @@ namespace CommsTablet.Tablet
             {
                 image.sprite = sprite;
                 image.type = sprite.border != Vector4.zero ? UnityEngine.UI.Image.Type.Sliced : UnityEngine.UI.Image.Type.Simple;
+                changed = true;
             }
             if (image.color != c)
+            {
                 image.color = c;
+                changed = true;
+            }
             Place(image, r);
         }
 
-        public void Picture(Rect r, Texture texture)
+        public void Picture(Rect r, Texture texture, int revision = 0)
         {
             if (texture == null)
                 return;
+            var idx = pictureUsed;
             var raw = Node(pictures, ref pictureUsed, "picture");
-            if (raw.texture != texture)
+            while (pictureRevisions.Count < pictures.Count)
+                pictureRevisions.Add(int.MinValue);
+            if (raw.texture != texture || pictureRevisions[idx] != revision)
+            {
                 raw.texture = texture;
-            raw.color = Color.white;
+                pictureRevisions[idx] = revision;
+                changed = true;
+            }
+            if (raw.color != Color.white)
+            {
+                raw.color = Color.white;
+                changed = true;
+            }
             Place(raw, r);
         }
 
@@ -195,17 +238,52 @@ namespace CommsTablet.Tablet
                 t.resizeTextForBestFit = true;
                 t.verticalOverflow = VerticalWrapMode.Truncate;
                 t.lineSpacing = LineSpacing;
+                changed = true;
             }
-            t.text = text;
-            t.fontSize = look.Size;
-            t.resizeTextMaxSize = look.Size;
-            t.resizeTextMinSize = Math.Min(look.MinSize, look.Size);
-            t.fontStyle = look.Bold ? FontStyle.Bold : FontStyle.Normal;
-            t.alignment = look.Align;
-            t.horizontalOverflow = HorizontalWrapMode.Wrap;
+            if (t.text != text)
+            {
+                t.text = text;
+                changed = true;
+            }
+            if (t.fontSize != look.Size)
+            {
+                t.fontSize = look.Size;
+                changed = true;
+            }
+            if (t.resizeTextMaxSize != look.Size)
+            {
+                t.resizeTextMaxSize = look.Size;
+                changed = true;
+            }
+            var minSize = Math.Min(look.MinSize, look.Size);
+            if (t.resizeTextMinSize != minSize)
+            {
+                t.resizeTextMinSize = minSize;
+                changed = true;
+            }
+            var style = look.Bold ? FontStyle.Bold : FontStyle.Normal;
+            if (t.fontStyle != style)
+            {
+                t.fontStyle = style;
+                changed = true;
+            }
+            if (t.alignment != look.Align)
+            {
+                t.alignment = look.Align;
+                changed = true;
+            }
+            if (t.horizontalOverflow != HorizontalWrapMode.Wrap)
+            {
+                t.horizontalOverflow = HorizontalWrapMode.Wrap;
+                changed = true;
+            }
             var c = look.Text;
             c.a *= alpha;
-            t.color = c;
+            if (t.color != c)
+            {
+                t.color = c;
+                changed = true;
+            }
             Place(t, new Rect(r.x + look.PadLeft, r.y, Math.Max(1, r.width - look.PadLeft - look.PadRight), r.height));
         }
 

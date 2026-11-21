@@ -157,7 +157,7 @@ namespace CommsTablet.Tablet
 
         public static void Label(Rect r, string text, Look look) => TabletSurface.Current?.Label(r, text, look);
 
-        public static void Picture(Rect r, Texture texture) => TabletSurface.Current?.Picture(r, texture);
+        public static void Picture(Rect r, Texture texture, int revision = 0) => TabletSurface.Current?.Picture(r, texture, revision);
 
         /// <summary>A plate: true when it was pressed. A disabled plate is drawn faint and takes no press.</summary>
         public static bool Button(Rect r, string text, Look look, bool enabled = true) => TabletSurface.Current != null && TabletSurface.Current.Button(r, text, look, enabled);

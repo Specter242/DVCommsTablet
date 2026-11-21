@@ -28,7 +28,13 @@ namespace CommsTablet.Map
                 return;
             hooked = true;
             WorldStreamingInit.LoadingFinished += Loaded;
-            UnloadWatcher.UnloadRequested += Forget;
+            UnloadWatcher.UnloadRequested += Unload;
+        }
+
+        private static void Unload()
+        {
+            Forget();
+            Guests.GuestRegistry.ResetSession();
         }
 
         /// <summary>Whether the network has been built for this world.</summary>

@@ -35,29 +35,52 @@ namespace CommsTablet
             }
         }
 
+        private const float LifecycleRetrySeconds = 1f;
+
         private static readonly Type Lifecycle = AccessTools.TypeByName("Multiplayer.Components.Networking.NetworkLifecycle");
         private static readonly PropertyInfo ClientRunning = Lifecycle == null ? null : AccessTools.Property(Lifecycle, "IsClientRunning");
         private static readonly PropertyInfo ServerRunning = Lifecycle == null ? null : AccessTools.Property(Lifecycle, "IsServerRunning");
         private static UnityEngine.Object lifecycle;
+        private static float nextLifecycleCheck;
+        private static bool sceneHooked;
 
         /// <summary>
         /// Whether this game is a Multiplayer client: its client runs without
         /// the host's server. False without the Multiplayer mod.
         /// </summary>
-        internal static bool IsMultiplayerClient => Running(out var client, out var server) && client && !server;
+        internal static bool IsMultiplayerClient => Running(out var client, out var server, forceRefresh: false) && client && !server;
+
+        /// <summary>Uncached client check for host-only actions so a newly connected client cannot bypass the gate.</summary>
+        internal static bool IsMultiplayerClientFresh => Running(out var client, out var server, forceRefresh: true) && client && !server;
 
         /// <summary>Whether this game hosts a Multiplayer session: its server runs. False without the Multiplayer mod.</summary>
-        internal static bool IsMultiplayerHost => Running(out _, out var server) && server;
+        internal static bool IsMultiplayerHost => Running(out _, out var server, forceRefresh: false) && server;
 
-        private static bool Running(out bool client, out bool server)
+        private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene _, UnityEngine.SceneManagement.LoadSceneMode __) =>
+            nextLifecycleCheck = 0f;
+
+        private static bool Running(out bool client, out bool server, bool forceRefresh)
         {
             client = server = false;
             if (ClientRunning == null || ServerRunning == null)
                 return false;
             if (lifecycle == null)
+            {
+                if (!sceneHooked)
+                {
+                    sceneHooked = true;
+                    UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
+                }
+                var now = Time.unscaledTime;
+                if (!forceRefresh && now < nextLifecycleCheck)
+                    return false;
                 lifecycle = UnityEngine.Object.FindObjectOfType(Lifecycle);
-            if (lifecycle == null)
-                return false;
+                if (lifecycle == null)
+                {
+                    nextLifecycleCheck = now + LifecycleRetrySeconds;
+                    return false;
+                }
+            }
             try
             {
                 client = (bool)ClientRunning.GetValue(lifecycle);

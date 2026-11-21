@@ -27,11 +27,22 @@ namespace CommsTablet.Tablet
         private static readonly Color Laser = new Color(1f, 1f, 1f, 1f);
         private static readonly Color SkinLaser = new Color(1f, 0.5f, 0f);
 
+        private const float PollInterval = 0.25f;
+
         // From the stock Paint mode, set when the tablet is built (TabletItem).
         public PaintTheme[] themes;
 
         private readonly List<PaintTheme> paints = new List<PaintTheme>();
         private (string title, string content, string action) shown;
+        private (TrainCar car, TrainCar pointed, PaintTheme last, int area, int version) shownKey;
+        private bool displayValid;
+        private float nextPollAt;
+        private int stateVersion;
+        private TrainCar wearingCar;
+        private int wearingArea;
+        private PaintTheme cachedWearing;
+        private float wearingPollAt = -1f;
+        private int area;
 
         /// <summary>The chosen car's paints, in the page's order.</summary>
         internal IReadOnlyList<PaintTheme> Paints => paints;
@@ -40,7 +51,18 @@ namespace CommsTablet.Tablet
         internal PaintTheme Last { get; private set; }
 
         /// <summary>All, Exterior, or Interior: what a paint covers on a car with an inside.</summary>
-        internal int Area { get; set; }
+        internal int Area
+        {
+            get => area;
+            set
+            {
+                if (area == value)
+                    return;
+                area = value;
+                wearingPollAt = -1f;
+                stateVersion++;
+            }
+        }
 
         public override Color GetLaserBeamColor() => SkinManagerLink.Present ? SkinLaser : Laser;
 
@@ -49,9 +71,20 @@ namespace CommsTablet.Tablet
             paints.Clear();
             paints.AddRange(PaintsFor(Car));
             if (Car.PaintInterior == null) Area = All;
+            wearingCar = null;
+            cachedWearing = null;
+            wearingPollAt = -1f;
+            stateVersion++;
         }
 
-        protected override void OnReleased() => paints.Clear();
+        protected override void OnReleased()
+        {
+            paints.Clear();
+            wearingCar = null;
+            cachedWearing = null;
+            wearingPollAt = -1f;
+            stateVersion++;
+        }
 
         protected override void ApplyLast()
         {
@@ -134,11 +167,25 @@ namespace CommsTablet.Tablet
                     return null;
                 if (SkinManagerLink.Present)
                 {
+                    var now = Time.unscaledTime;
+                    if (wearingCar == Car && wearingArea == area && now < wearingPollAt)
+                        return cachedWearing;
                     var (exterior, interior) = SkinManagerLink.Wearing(Car);
-                    var name = Area == Interior ? interior : exterior;
-                    return paints.FirstOrDefault(p => p.name == name);
+                    var name = area == Interior ? interior : exterior;
+                    PaintTheme match = null;
+                    for (var i = 0; i < paints.Count; i++)
+                        if (paints[i].name == name)
+                        {
+                            match = paints[i];
+                            break;
+                        }
+                    wearingCar = Car;
+                    wearingArea = area;
+                    cachedWearing = match;
+                    wearingPollAt = now + PollInterval;
+                    return match;
                 }
-                var paint = Area == Interior ? Car.PaintInterior : Car.PaintExterior;
+                var paint = area == Interior ? Car.PaintInterior : Car.PaintExterior;
                 return paint != null ? paint.CurrentTheme : null;
             }
         }
@@ -151,12 +198,28 @@ namespace CommsTablet.Tablet
             return string.IsNullOrEmpty(name) || name.StartsWith("[") ? (string.IsNullOrEmpty(theme.AssetName) ? theme.name : theme.AssetName) : name;
         }
 
-        protected override void Redisplay() => shown = default;
+        protected override void Redisplay()
+        {
+            shown = default;
+            displayValid = false;
+            wearingPollAt = -1f;
+            stateVersion++;
+        }
 
         protected override void ShowDisplay()
         {
             if (display == null)
                 return;
+            var key = (Car, Pointed, Last, area, stateVersion);
+            var now = Time.unscaledTime;
+            var pollDue = now >= nextPollAt;
+            if (displayValid && key == shownKey && !pollDue)
+                return;
+            shownKey = key;
+            displayValid = true;
+            if (pollDue && Car != null)
+                wearingPollAt = -1f;
+            nextPollAt = now + PollInterval;
             string content;
             if (Car == null)
                 content = "Point at a car";

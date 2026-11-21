@@ -168,36 +168,56 @@ namespace CommsTablet
         /// frame ends.
         /// </summary>
         internal static List<object> On(TrainCar car, ICollection<Object> leaving = null) =>
-            AppliedOn(car).Where(c => leaving == null || !leaving.Contains(c)).Select(c => AppliedConfig.GetValue(c)).Where(c => c != null).ToList();
+            TryAppliedOn(car, leaving, out var applied) ? applied.Select(c => c.Config).ToList() : new List<object>();
 
-        private static List<Object> AppliedOn(TrainCar car)
+        /// <summary>
+        /// Reads the active <c>AppliedChange</c> components and configs on
+        /// <paramref name="car"/>, excluding <paramref name="leaving"/>. False
+        /// if Car Changer threw while reading them.
+        /// </summary>
+        internal static bool TryAppliedOn(TrainCar car, ICollection<Object> leaving, out List<(Object Component, object Config)> applied)
         {
-            var result = new List<Object>();
+            applied = new List<(Object, object)>();
+            if (car == null || AppliedChanges == null || AppliedConfig == null)
+                return false;
             try
             {
-                if (car != null && AppliedChanges?.Invoke(null, new object[] { car }) is IList changes)
+                if (AppliedChanges.Invoke(null, new object[] { car }) is IList changes)
                     foreach (var change in changes)
-                        if (change is Object component && component != null)
-                            result.Add(component);
+                    {
+                        if (!(change is Object component) || component == null)
+                            continue;
+                        if (leaving != null && leaving.Contains(component))
+                            continue;
+                        var config = AppliedConfig.GetValue(component);
+                        if (config != null)
+                            applied.Add((component, config));
+                    }
+                return true;
             }
             catch (Exception e)
             {
                 Main.Mod?.Logger.LogException("Could not read a car's changes from Car Changer", e);
+                applied.Clear();
+                return false;
             }
-            return result;
         }
 
         /// <summary>
         /// Whether <paramref name="a"/> can go on with <paramref name="b"/>
-        /// (<c>ModelConfig.CanCombine</c>; never with itself). The radio asks
-        /// it with the new change first to switch one on, and with the one on
-        /// first to take a clashing one off: so does the page.
+        /// (<c>ModelConfig.CanCombine</c>; never with itself). False if the
+        /// reflection call failed, with <paramref name="canCombine"/> false so
+        /// callers can abort instead of assuming a confirmed conflict.
         /// </summary>
-        internal static bool Combine(object a, object b)
+        internal static bool TryCombine(object a, object b, out bool canCombine)
         {
+            canCombine = false;
+            if (CanCombine == null || a == null || b == null)
+                return false;
             try
             {
-                return (bool)CanCombine.Invoke(null, new[] { a, b });
+                canCombine = (bool)CanCombine.Invoke(null, new[] { a, b });
+                return true;
             }
             catch (Exception e)
             {
@@ -206,8 +226,31 @@ namespace CommsTablet
             }
         }
 
-        /// <summary>The changes on the car that <paramref name="config"/> cannot go on with, as the radio finds them.</summary>
-        internal static List<object> Clashes(object config, IEnumerable<object> on) => on.Where(c => !Combine(config, c)).ToList();
+        /// <summary>Whether <paramref name="a"/> can go on with <paramref name="b"/> (<c>ModelConfig.CanCombine</c>).</summary>
+        internal static bool Combine(object a, object b) => TryCombine(a, b, out var ok) && ok;
+
+        /// <summary>
+        /// The changes on the car that <paramref name="config"/> cannot go on
+        /// with, evaluated in consistent <c>(config, existing)</c> order. False
+        /// if any comparison failed.
+        /// </summary>
+        internal static bool TryClashes(object config, IEnumerable<(Object Component, object Config)> applied, out List<(Object Component, object Config)> clashes)
+        {
+            clashes = new List<(Object, object)>();
+            if (config == null || applied == null)
+                return false;
+            foreach (var entry in applied)
+            {
+                if (!TryCombine(config, entry.Config, out var ok))
+                {
+                    clashes.Clear();
+                    return false;
+                }
+                if (!ok)
+                    clashes.Add(entry);
+            }
+            return true;
+        }
 
         /// <summary>Puts <paramref name="config"/> on <paramref name="car"/> as the radio does (<c>AppliedChange.AddChange</c>); Car Changer applies it the next frame.</summary>
         internal static bool Add(TrainCar car, object config)
@@ -223,14 +266,15 @@ namespace CommsTablet
             }
         }
 
-        /// <summary>Takes the changes <paramref name="which"/> picks off <paramref name="car"/>, as the radio does (each change's component destroyed); the returned components are going.</summary>
-        internal static List<Object> Remove(TrainCar car, Func<object, bool> which)
+        /// <summary>Destroys the exact validated <c>AppliedChange</c> components in <paramref name="components"/>; the returned components are going.</summary>
+        internal static List<Object> Remove(IEnumerable<Object> components)
         {
             var gone = new List<Object>();
-            foreach (var change in AppliedOn(car))
+            if (components == null)
+                return gone;
+            foreach (var change in components)
             {
-                var config = AppliedConfig.GetValue(change);
-                if (config == null || !which(config))
+                if (change == null)
                     continue;
                 Object.Destroy(change);
                 gone.Add(change);

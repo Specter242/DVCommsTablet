@@ -17,10 +17,11 @@ namespace CommsTablet.Pages
         private const float RowGap = 8, RowPad = 12, MinRow = Plate + 16, NoteGap = 4, Slack = 6;
         private const float HeadingHeight = 52, BadgeW = 116, BadgeH = 36, KeyMin = 44, KeyNameW = 640;
         private const float ChipHeight = 60, ChipGap = 8;
-        private const int ChipsPerLine = 8, SectionsForChips = 3;
+        private const int ChipsPerLine = 10, SectionsForChips = 3;
         private const int ListColumns = 2, ListRows = 5;
-        // An action's plate: its label and the line under it, as the list's plates.
-        private const float ActionHeight = 100;
+        // An action's plate: its label and the line under it. Ten section plates to a line and 84-pixel
+        // plates keep five actions on a nine-section mod's first page (Realistic Firing 1.24.3.1012, 2026-11-21).
+        private const float ActionHeight = 84;
 
         /// <summary>The heading over a mod's one-time actions, at the top of its section.</summary>
         internal const string EquipmentTitle = "Equipment";
@@ -29,6 +30,10 @@ namespace CommsTablet.Pages
         private int page;
         private string notice;
         private Layout shown;
+        private OwnerMod cachedMod;
+        private VisibilitySnapshot cachedModState;
+        private Layout cachedLayout;
+        private readonly Dictionary<string, (VisibilitySnapshot state, int count)> listCounts = new Dictionary<string, (VisibilitySnapshot, int)>();
         private OwnerMod queuedMod;
         private ModAction queuedAction;
 
@@ -93,8 +98,68 @@ namespace CommsTablet.Pages
             var mod = queuedMod;
             queuedMod = null;
             notice = mod.Actions?.Run(queuedAction) ?? $"{queuedAction.Label}: not available";
+            InvalidateCache();
             Main.Mod?.Logger.Log($"Settings app: {mod.Name}'s \"{queuedAction.Label}\": {notice}");
             return true;
+        }
+
+        private void InvalidateCache()
+        {
+            cachedMod = null;
+            cachedLayout = null;
+            listCounts.Clear();
+        }
+
+        private int SettingCount(OwnerMod mod)
+        {
+            var cacheable = mod.TryVisibilitySnapshot(out var state);
+            if (cacheable && listCounts.TryGetValue(mod.Id, out var cached) && state.SameAs(cached.state))
+                return cached.count;
+            var rows = mod.Rows();
+            var count = 0;
+            for (var i = 0; i < rows.Count; i++)
+                if (rows[i].Kind != SettingKind.Heading && rows[i].Kind != SettingKind.Space)
+                    count++;
+            if (cacheable)
+                listCounts[mod.Id] = (state, count);
+            else
+                listCounts.Remove(mod.Id);
+            return count;
+        }
+
+        private static bool SameActions(List<ModAction> a, List<ModAction> b)
+        {
+            var countA = a?.Count ?? 0;
+            var countB = b?.Count ?? 0;
+            if (countA != countB)
+                return false;
+            for (var i = 0; i < countA; i++)
+                if (a[i].Index != b[i].Index || a[i].Label != b[i].Label || a[i].Help != b[i].Help)
+                    return false;
+            return true;
+        }
+
+        private Layout LayoutFor(OwnerMod mod)
+        {
+            var cacheable = mod.TryVisibilitySnapshot(out var state);
+            var equipment = mod.Actions?.List();
+            if (cacheable && cachedLayout != null && ReferenceEquals(cachedMod, mod)
+                && state.SameAs(cachedModState) && SameActions(cachedLayout.Equipment, equipment))
+                return cachedLayout;
+            var built = Build(mod, equipment);
+            if (cacheable)
+            {
+                cachedLayout = built;
+                cachedMod = mod;
+                cachedModState = state;
+            }
+            else
+            {
+                cachedLayout = null;
+                cachedMod = null;
+                cachedModState = null;
+            }
+            return built;
         }
 
         private static Look TextLook(Color color, int size, int min, TextAnchor align) =>
@@ -156,7 +221,7 @@ namespace CommsTablet.Pages
                     break;
                 var mod = mods[index];
                 var r = new Rect(Left + i % ListColumns * (Width / ListColumns + 0), ListTop + i / ListColumns * 120, Width / ListColumns - 12, 108);
-                var count = mod.Rows().Count(row => row.Kind != SettingKind.Heading && row.Kind != SettingKind.Space);
+                var count = SettingCount(mod);
                 // A long name is split, not shrunk: its name, then what it is, then its count and version.
                 var name = MainName(mod.Name, out var detail);
                 var about = $"{(count > 0 ? count + " settings" : EquipmentTitle)} · {mod.Entry.Info.Version}";
@@ -165,6 +230,7 @@ namespace CommsTablet.Pages
                     open = mod;
                     page = 0;
                     notice = null;
+                    cachedLayout = null;
                     S.Changed();
                 }
             }
@@ -180,33 +246,23 @@ namespace CommsTablet.Pages
                 open = null;
                 page = 0;
                 notice = null;
+                InvalidateCache();
                 S.Changed();
             }
             S.Label(new Rect(Left + 220, Top, Width - 240, Plate), MainName(mod.Name, out _), S.Big);
-            var layout = shown = Build(mod);
+            var layout = shown = LayoutFor(mod);
             page = Mathf.Clamp(page, 0, layout.Pages.Count - 1);
             if (layout.Chips)
                 DrawChips(layout);
             if (layout.Pages[page].Count == 0)
                 S.Label(new Rect(Left + 16, layout.Top, Width - 32, 200), "Nothing here to change on the tablet.", S.Empty);
 
-            // Where each line goes; then each Keys card behind its lines, then the lines.
+            // Each Keys card behind its lines, then the lines (positions precomputed with the layout).
             var items = layout.Pages[page];
-            var ys = new float[items.Count];
-            var y = layout.Top;
-            for (var i = 0; i < items.Count; i++)
+            var cards = layout.KeyCards[page];
+            for (var i = 0; i < cards.Count; i++)
             {
-                ys[i] = y;
-                y += items[i].Height;
-            }
-            for (var i = 0; i < items.Count; i++)
-            {
-                if (items[i].Kind != Line.Key || (i > 0 && items[i - 1].Kind == Line.Key))
-                    continue;
-                var last = i;
-                while (last + 1 < items.Count && items[last + 1].Kind == Line.Key)
-                    last++;
-                var card = new Rect(Left, ys[i], Width, ys[last] + items[last].Height - ys[i]);
+                var card = cards[i];
 #if !PUBLIC_RELEASE
                 Areas["keys"] = card;
 #endif
@@ -219,20 +275,20 @@ namespace CommsTablet.Pages
                 switch (item.Kind)
                 {
                     case Line.Heading:
-                        Text("heading:" + item.Text, new Rect(Left + 16, ys[i], Width - 32, h - RowGap), item.Text, S.Section);
+                        Text("heading:" + item.Text, new Rect(Left + 16, item.Y, Width - 32, h - RowGap), item.Text, S.Section);
                         break;
                     case Line.KeysTitle:
-                        Text("keys", new Rect(Left + 16, ys[i], 400, h - RowGap), item.Text, S.Section);
-                        S.Label(new Rect(Left + 420, ys[i], Width - 436, h - RowGap), "set in the mod's settings window (Ctrl+F10)", KeysNote);
+                        Text("keys", new Rect(Left + 16, item.Y, 400, h - RowGap), item.Text, S.Section);
+                        S.Label(new Rect(Left + 420, item.Y, Width - 436, h - RowGap), "set in the mod's settings window (Ctrl+F10)", KeysNote);
                         break;
                     case Line.Key:
-                        DrawKey(item.Row, new Rect(Left, ys[i], Width, h));
+                        DrawKey(item.Row, new Rect(Left, item.Y, Width, h));
                         break;
                     case Line.Setting:
-                        DrawRow(mod, item.Row, new Rect(Left, ys[i], Width, h - RowGap));
+                        DrawRow(mod, item.Row, item.Shape, new Rect(Left, item.Y, Width, h - RowGap));
                         break;
                     case Line.Action:
-                        DrawAction(mod, item.Action, new Rect(Left, ys[i], Width, h - RowGap));
+                        DrawAction(mod, item.Action, new Rect(Left, item.Y, Width, h - RowGap));
                         break;
                 }
             }
@@ -260,10 +316,9 @@ namespace CommsTablet.Pages
             }
         }
 
-        private void DrawRow(OwnerMod mod, SettingRow row, Rect r)
+        private void DrawRow(OwnerMod mod, SettingRow row, RowShape shape, Rect r)
         {
             S.Box(r, S.Card);
-            var shape = Shape(row);
             var key = row.Field.Name;
             // The text centred on the control by its measured height; each rect a little taller, so nothing is cut.
             var top = r.y + Mathf.Max(RowPad, (r.height - shape.Block) * 0.5f);
@@ -340,6 +395,7 @@ namespace CommsTablet.Pages
         private void Change(OwnerMod mod, SettingRow row, object value)
         {
             notice = mod.Apply(row, value);
+            InvalidateCache();
             S.Changed();
         }
 
@@ -380,10 +436,11 @@ namespace CommsTablet.Pages
         {
             internal Line Kind;
             internal SettingRow Row;
+            internal RowShape Shape;
             internal ModAction Action;
             internal string Text;
-            /// <summary>Its height with the gap under it.</summary>
-            internal float Height;
+            /// <summary>Its height with the gap under it, and its top on the page.</summary>
+            internal float Height, Y;
         }
 
         /// <summary>A mod's settings laid out: its sections (for the section plates) and its pages.</summary>
@@ -392,7 +449,9 @@ namespace CommsTablet.Pages
             internal readonly List<string> Sections = new List<string>();
             internal readonly List<int> FirstPage = new List<int>();
             internal readonly List<List<Item>> Pages = new List<List<Item>> { new List<Item>() };
+            internal readonly List<List<Rect>> KeyCards = new List<List<Rect>>();
             internal readonly List<int> SectionOfPage = new List<int> { 0 };
+            internal List<ModAction> Equipment;
             internal bool Chips;
             internal float Top;
         }
@@ -432,7 +491,7 @@ namespace CommsTablet.Pages
         /// settings each section, Equipment the first, starts a page and has a
         /// plate above the rows; else a heading never ends a page.
         /// </summary>
-        private static Layout Build(OwnerMod mod)
+        private static Layout Build(OwnerMod mod, List<ModAction> equipment)
         {
             var rows = mod.Rows();
             var sections = new List<KeyValuePair<string, List<SettingRow>>>();
@@ -459,10 +518,10 @@ namespace CommsTablet.Pages
                 current.Add(row);
             }
             sections.RemoveAll(s => s.Value.All(r => r.Kind == SettingKind.Space));
-            var equipment = mod.Actions?.List() ?? new List<ModAction>();
-            var layout = new Layout { Chips = sections.Count(s => s.Key != null) >= SectionsForChips };
+            var actions = equipment ?? new List<ModAction>();
+            var layout = new Layout { Chips = sections.Count(s => s.Key != null) >= SectionsForChips, Equipment = actions };
             var titles = sections.Select(s => s.Key ?? "General").ToList();
-            if (equipment.Count > 0)
+            if (actions.Count > 0)
                 titles.Insert(0, EquipmentTitle);
             if (keys.Count > 0)
                 titles.Add(keys.All(k => k.IsKey) ? "Keys" : "Keys and text");
@@ -472,10 +531,10 @@ namespace CommsTablet.Pages
             var room = Bottom - layout.Top;
 
             var lists = new List<List<Item>>();
-            if (equipment.Count > 0)
+            if (actions.Count > 0)
             {
                 var items = new List<Item> { new Item { Kind = Line.Heading, Text = EquipmentTitle, Height = HeadingHeight } };
-                foreach (var action in equipment)
+                foreach (var action in actions)
                     items.Add(new Item { Kind = Line.Action, Action = action, Height = Mathf.Min(room, ActionHeight + RowGap) });
                 lists.Add(items);
             }
@@ -485,9 +544,15 @@ namespace CommsTablet.Pages
                 if (section.Key != null)
                     items.Add(new Item { Kind = Line.Heading, Text = section.Key, Height = HeadingHeight });
                 foreach (var row in section.Value)
-                    items.Add(row.Kind == SettingKind.Space
-                        ? new Item { Kind = Line.Space, Row = row, Height = Mathf.Clamp(row.Space * 2f, 8f, 48f) }
-                        : new Item { Kind = Line.Setting, Row = row, Height = Mathf.Min(room, Shape(row).Height + RowGap) });
+                {
+                    if (row.Kind == SettingKind.Space)
+                        items.Add(new Item { Kind = Line.Space, Row = row, Height = Mathf.Clamp(row.Space * 2f, 8f, 48f) });
+                    else
+                    {
+                        var shape = Shape(row);
+                        items.Add(new Item { Kind = Line.Setting, Row = row, Shape = shape, Height = Mathf.Min(room, shape.Height + RowGap) });
+                    }
+                }
                 lists.Add(items);
             }
             if (keys.Count > 0)
@@ -521,9 +586,25 @@ namespace CommsTablet.Pages
                         continue;
                     if (pageItems.Count == 0)
                         layout.SectionOfPage[layout.Pages.Count - 1] = s;
+                    item.Y = layout.Top + used;
                     pageItems.Add(item);
                     used += item.Height;
                 }
+            }
+            for (var p = 0; p < layout.Pages.Count; p++)
+            {
+                var pageItems = layout.Pages[p];
+                var cards = new List<Rect>();
+                for (var i = 0; i < pageItems.Count; i++)
+                {
+                    if (pageItems[i].Kind != Line.Key || (i > 0 && pageItems[i - 1].Kind == Line.Key))
+                        continue;
+                    var last = i;
+                    while (last + 1 < pageItems.Count && pageItems[last + 1].Kind == Line.Key)
+                        last++;
+                    cards.Add(new Rect(Left, pageItems[i].Y, Width, pageItems[last].Y + pageItems[last].Height - pageItems[i].Y));
+                }
+                layout.KeyCards.Add(cards);
             }
             return layout;
         }
@@ -537,6 +618,7 @@ namespace CommsTablet.Pages
             open = mod;
             page = 0;
             notice = null;
+            InvalidateCache();
         }
 
         /// <summary>Goes to the page of the open mod that shows a field.</summary>
@@ -544,14 +626,14 @@ namespace CommsTablet.Pages
         {
             if (open == null)
                 return;
-            var pages = Build(open).Pages;
+            var pages = LayoutFor(open).Pages;
             var index = pages.FindIndex(p => p.Any(i => i.Row?.Field != null && i.Row.Field.Name == field));
             if (index >= 0)
                 page = index;
         }
 
         /// <summary>The section plates' names in the last pass (none without plates).</summary>
-        internal IReadOnlyList<string> SectionsForTest => shown != null && shown.Chips && open != null ? shown.Sections : (IReadOnlyList<string>)new string[0];
+        internal IReadOnlyList<string> SectionsForTest => shown != null && shown.Chips && open != null ? shown.Sections : (IReadOnlyList<string>)Array.Empty<string>();
 
         /// <summary>The section the page shown is in, or -1.</summary>
         internal int SectionForTest => shown != null && open != null && page < shown.SectionOfPage.Count ? shown.SectionOfPage[page] : -1;

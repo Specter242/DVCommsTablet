@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace CommsTablet.Core.Booklet
@@ -33,7 +34,9 @@ namespace CommsTablet.Core.Booklet
             var m = Pattern.Match(name);
             if (!m.Success)
                 return false;
-            parsed = new YardTrackName(m.Groups[1].Value, m.Groups[2].Value, int.Parse(m.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture), m.Groups[4].Value);
+            if (!int.TryParse(m.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number))
+                return false;
+            parsed = new YardTrackName(m.Groups[1].Value, m.Groups[2].Value, number, m.Groups[4].Value);
             return true;
         }
 

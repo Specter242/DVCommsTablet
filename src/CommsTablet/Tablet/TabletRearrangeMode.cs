@@ -14,10 +14,18 @@ namespace CommsTablet.Tablet
     /// </summary>
     internal sealed class TabletRearrangeMode : TabletCarMode
     {
+        private const float PollInterval = 0.25f;
         private static readonly Color Laser = new Color(0.55f, 0.75f, 1f);
 
         private readonly List<RearrangedLink.Arrangement> arrangements = new List<RearrangedLink.Arrangement>();
         private (string content, string action) shown;
+        private (TrainCar car, TrainCar pointed, RearrangedLink.Arrangement last, int version) shownKey;
+        private bool displayValid;
+        private float nextPollAt;
+        private int stateVersion;
+        private TrainCar wearingCar;
+        private RearrangedLink.Arrangement cachedWearing;
+        private float wearingPollAt = -1f;
 
         /// <summary>The chosen loco's arrangements, in the mod's order.</summary>
         internal IReadOnlyList<RearrangedLink.Arrangement> Arrangements => arrangements;
@@ -38,6 +46,10 @@ namespace CommsTablet.Tablet
             arrangements.AddRange(RearrangedLink.For(Car));
             Last = null;
             Reason = null;
+            wearingCar = null;
+            cachedWearing = null;
+            wearingPollAt = -1f;
+            stateVersion++;
         }
 
         protected override void OnReleased()
@@ -45,6 +57,10 @@ namespace CommsTablet.Tablet
             arrangements.Clear();
             Last = null;
             Reason = null;
+            wearingCar = null;
+            cachedWearing = null;
+            wearingPollAt = -1f;
+            stateVersion++;
         }
 
         protected override void ApplyLast()
@@ -72,8 +88,21 @@ namespace CommsTablet.Tablet
             {
                 if (Car == null)
                     return null;
+                var now = Time.unscaledTime;
+                if (wearingCar == Car && now < wearingPollAt)
+                    return cachedWearing;
                 var id = RearrangedLink.Current(Car);
-                return arrangements.FirstOrDefault(a => a.Id == id);
+                RearrangedLink.Arrangement match = null;
+                for (var i = 0; i < arrangements.Count; i++)
+                    if (arrangements[i].Id == id)
+                    {
+                        match = arrangements[i];
+                        break;
+                    }
+                wearingCar = Car;
+                cachedWearing = match;
+                wearingPollAt = now + PollInterval;
+                return match;
             }
         }
 
@@ -90,12 +119,28 @@ namespace CommsTablet.Tablet
             return done;
         }
 
-        protected override void Redisplay() => shown = default;
+        protected override void Redisplay()
+        {
+            shown = default;
+            displayValid = false;
+            wearingPollAt = -1f;
+            stateVersion++;
+        }
 
         protected override void ShowDisplay()
         {
             if (display == null)
                 return;
+            var key = (Car, Pointed, Last, stateVersion);
+            var now = Time.unscaledTime;
+            var pollDue = now >= nextPollAt;
+            if (displayValid && key == shownKey && !pollDue)
+                return;
+            shownKey = key;
+            displayValid = true;
+            if (pollDue && Car != null)
+                wearingPollAt = -1f;
+            nextPollAt = now + PollInterval;
             string content;
             if (Car == null)
                 content = "Point at an S282 or S060";

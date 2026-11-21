@@ -60,21 +60,38 @@ namespace CommsTablet.Map
             camera.farClipPlane = 300 * k;
             camera.aspect = target.width / (float)target.height;
             camera.cullingMask = 1 << shown.gameObject.layer;
+            var previousTarget = RenderTexture.active;
             camera.targetTexture = target;
-            camera.Render();
-            camera.targetTexture = null;
+            try
+            {
+                camera.Render();
+            }
+            finally
+            {
+                camera.targetTexture = null;
+                RenderTexture.active = previousTarget;
+            }
             if (overlay != null)
             {
                 EnsureMaterial();
                 var previous = RenderTexture.active;
-                RenderTexture.active = target;
-                GL.PushMatrix();
-                GL.LoadPixelMatrix(0, target.width, target.height, 0);
-                lineMaterial.SetPass(0);
-                double w = target.width, h = target.height;
-                overlay((x, y) => new Vector2((float)((x - centerX) * scale + w / 2), (float)((centerY - y) * scale + h / 2)));
-                GL.PopMatrix();
-                RenderTexture.active = previous;
+                var pushed = false;
+                try
+                {
+                    RenderTexture.active = target;
+                    GL.PushMatrix();
+                    pushed = true;
+                    GL.LoadPixelMatrix(0, target.width, target.height, 0);
+                    lineMaterial.SetPass(0);
+                    double w = target.width, h = target.height;
+                    overlay((x, y) => new Vector2((float)((x - centerX) * scale + w / 2), (float)((centerY - y) * scale + h / 2)));
+                }
+                finally
+                {
+                    if (pushed)
+                        GL.PopMatrix();
+                    RenderTexture.active = previous;
+                }
             }
             return true;
         }

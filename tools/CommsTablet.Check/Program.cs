@@ -16,7 +16,7 @@ namespace CommsTablet.Check
     /// private members it reads and writes, its Harmony targets, the prefab
     /// loads it wraps at the save and shop sites, and its links to
     /// Multiplayer and Custom Car Loader when those are given. Usage:
-    /// <c>CommsTablet.Check.exe MANAGED_DIR [MOD_ASSEMBLY ...]</c>.
+    /// <c>CommsTablet.Check.exe MANAGED_DIR [--optional MOD_ASSEMBLY | --require MOD_ASSEMBLY | MOD_ASSEMBLY] ...</c>.
     /// </summary>
     internal static class Program
     {
@@ -25,21 +25,59 @@ namespace CommsTablet.Check
 
         private static int Main(string[] args)
         {
+            const string usage = "usage: CommsTablet.Check.exe MANAGED_DIR [--optional MOD_ASSEMBLY | --require MOD_ASSEMBLY | MOD_ASSEMBLY] ...";
             if (args.Length < 1 || !Directory.Exists(args[0]))
             {
-                Console.Error.WriteLine("usage: CommsTablet.Check.exe MANAGED_DIR [MOD_ASSEMBLY ...]");
+                Console.Error.WriteLine(usage);
                 return 2;
             }
             var managed = args[0];
+            var optionalPaths = new List<string>();
+            var requiredPaths = new List<string>();
+            for (var i = 1; i < args.Length; i++)
+            {
+                var arg = args[i];
+                if (arg == "--optional" || arg == "--require")
+                {
+                    if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]) || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                    {
+                        Console.Error.WriteLine($"{arg} requires a path\n{usage}");
+                        return 2;
+                    }
+                    (arg == "--optional" ? optionalPaths : requiredPaths).Add(args[++i]);
+                }
+                else if (arg.StartsWith("--", StringComparison.Ordinal))
+                {
+                    Console.Error.WriteLine($"unknown option: {arg}\n{usage}");
+                    return 2;
+                }
+                else
+                {
+                    requiredPaths.Add(arg);
+                }
+            }
+            var missingRequired = requiredPaths.Where(p => !File.Exists(p)).ToList();
+            if (missingRequired.Count > 0)
+            {
+                foreach (var missing in missingRequired)
+                    Console.Error.WriteLine("missing required mod assembly: " + missing);
+                return 1;
+            }
+            var pathsToLoad = optionalPaths.Where(File.Exists).Concat(requiredPaths)
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
             var searched = new[] { managed, Path.Combine(managed, "UnityModManager") }
-                .Concat(args.Skip(1).Select(Path.GetDirectoryName)).ToList();
+                .Concat(pathsToLoad.Select(Path.GetDirectoryName).Where(d => !string.IsNullOrEmpty(d)))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
             AppDomain.CurrentDomain.AssemblyResolve += (_, e) =>
             {
                 var name = new AssemblyName(e.Name).Name + ".dll";
                 var path = searched.Select(d => Path.Combine(d, name)).FirstOrDefault(File.Exists);
                 return path != null ? Assembly.LoadFrom(path) : null;
             };
-            var mods = args.Skip(1).Where(File.Exists).Select(Assembly.LoadFrom).Select(a => a.GetName().Name).ToList();
+            var mods = pathsToLoad.Select(Assembly.LoadFrom).Select(a => a.GetName().Name).ToList();
             Console.WriteLine("Optional mods loaded: " + (mods.Count > 0 ? string.Join(", ", mods) : "none"));
 
             Members();
@@ -51,6 +89,7 @@ namespace CommsTablet.Check
             SettingsActions();
             SettingsRows();
             Release();
+            BookletChecks.Run(Check);
             TrackAheadChecks.Run(Check);
             Optional(mods);
 

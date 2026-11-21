@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using CommsTablet.Tablet;
 using DV;
 using DV.InventorySystem;
@@ -35,9 +36,11 @@ namespace CommsTablet.Pages
 
         private static double Money => SingletonBehaviour<Inventory>.Instance != null ? SingletonBehaviour<Inventory>.Instance.PlayerMoney : 0d;
 
+        private static string Dollars(double amount) => "$" + amount.ToString("N0", CultureInfo.InvariantCulture);
+
         internal override string Status => chosen == null
-            ? $"Choose a work train to buy. You have ${Money:N0}."
-            : $"{NameOf(chosen)}: ${WorkTrains.PriceOf(chosen):N0}. You have ${Money:N0}.";
+            ? $"Choose a work train to buy. You have {Dollars(Money)}."
+            : $"{NameOf(chosen)}: {Dollars(WorkTrains.PriceOf(chosen))}. You have {Dollars(Money)}.";
 
         internal override int Selected => chosen == null ? -1 : forSale.IndexOf(chosen);
 
@@ -51,7 +54,7 @@ namespace CommsTablet.Pages
             if (chosen != null && !forSale.Contains(chosen))
                 chosen = null;
             foreach (var livery in forSale)
-                tiles.Add(new Tile($"{NameOf(livery)}\n${WorkTrains.PriceOf(livery):N0}", livery.icon, livery));
+                tiles.Add(new Tile($"{NameOf(livery)}\n{Dollars(WorkTrains.PriceOf(livery))}", livery.icon, livery));
         }
 
         internal override void Press(int tile)
@@ -65,10 +68,13 @@ namespace CommsTablet.Pages
                 Notice = null;
                 return;
             }
+            var inventory = SingletonBehaviour<Inventory>.Instance;
+            if (inventory == null)
+                return;
             var price = WorkTrains.PriceOf(livery);
             if (Money < price)
             {
-                Notice = $"Not enough money: {NameOf(livery)} costs ${price:N0}";
+                Notice = $"Not enough money: {NameOf(livery)} costs {Dollars(price)}";
                 Radio.Sound(Radio.Summon != null ? Radio.Summon.cancelSound : null);
                 return;
             }
@@ -77,7 +83,7 @@ namespace CommsTablet.Pages
                 Notice = "Custom Car Loader would not sell it";
                 return;
             }
-            SingletonBehaviour<Inventory>.Instance.RemoveMoney(price);
+            inventory.RemoveMoney(price);
             if (Radio.Summon != null && Radio.Summon.moneyRemovedSound != null)
                 Radio.Summon.moneyRemovedSound.Play2D();
             Notice = $"Bought {NameOf(livery)}: summon it from the Crew tab";

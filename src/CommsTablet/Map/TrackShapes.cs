@@ -32,6 +32,7 @@ namespace CommsTablet.Map
 
         private readonly TrackNetwork network;
         private readonly TrackShape[] shapes;
+        private readonly bool[] readFailed;
         private readonly PostedLimits[] posted;
         private readonly bool[] sent;
         private readonly List<int> wanted = new List<int>();
@@ -44,6 +45,9 @@ namespace CommsTablet.Map
 
         /// <summary>Counts posted limits reaching a track already in use: it changes what the app draws.</summary>
         internal int PostedChanges { get; private set; }
+
+        /// <summary>Counts track shapes read so far.</summary>
+        internal int ShapesRead { get; private set; }
 
         /// <summary>Whether every track has been gone through.</summary>
         internal bool PostedDone { get; private set; }
@@ -66,23 +70,59 @@ namespace CommsTablet.Map
         {
             this.network = network;
             shapes = new TrackShape[network.Tracks.Length];
+            readFailed = new bool[shapes.Length];
             posted = new PostedLimits[shapes.Length];
             sent = new bool[shapes.Length];
         }
 
         public TrackShape this[int track] => shapes[track] ?? (shapes[track] = Read(track));
 
+        internal bool TryGet(int track, out TrackShape shape)
+        {
+            if (track < 0 || track >= shapes.Length)
+            {
+                shape = null;
+                return false;
+            }
+            if (shapes[track] != null)
+            {
+                shape = shapes[track];
+                return true;
+            }
+            if (readFailed[track])
+            {
+                shape = null;
+                return false;
+            }
+            try
+            {
+                shape = shapes[track] = Read(track);
+                return shape != null;
+            }
+            catch (Exception e)
+            {
+                readFailed[track] = true;
+                Main.Mod?.Logger.LogException($"Track Ahead: could not read track {track}", e);
+                shape = null;
+                return false;
+            }
+        }
+
         /// <summary>
-        /// Whether every track of the path has been read. Those not yet are
-        /// read over the coming frames, so a long route costs no one frame much.
+        /// Whether every readable track of the path has settled (read or known
+        /// unreadable). Tracks not yet read are read over the coming frames, so
+        /// a long route costs no one frame much, while a known-failed track
+        /// does not pin the profile back to the horizon.
         /// </summary>
         internal bool ReadSoon(AheadPath path)
         {
             toRead.Clear();
             for (var i = path.Legs.Count - 1; i >= 0; i--)
             {
-                if (shapes[path.Legs[i].Track] == null)
-                    toRead.Add(path.Legs[i].Track);
+                var track = path.Legs[i].Track;
+                if (shapes[track] != null || readFailed[track])
+                    continue;
+                toRead.Add(track);
             }
             if (toRead.Count == 0)
                 return true;
@@ -90,25 +130,48 @@ namespace CommsTablet.Map
             if (!reading && runner != null)
             {
                 reading = true;
-                runner.Run(ReadShapes());
+                try
+                {
+                    runner.Run(ReadShapes());
+                }
+                catch
+                {
+                    reading = false;
+                    throw;
+                }
             }
             return false;
         }
 
         private IEnumerator ReadShapes()
         {
-            var frame = new Stopwatch();
-            while (toRead.Count > 0 && MapWorld.HasNetwork && MapWorld.Network == network)
+            try
             {
-                frame.Restart();
-                while (toRead.Count > 0 && frame.Elapsed.TotalMilliseconds < FrameBudgetMs)
+                var frame = new Stopwatch();
+                while (toRead.Count > 0 && MapWorld.HasNetwork && MapWorld.Network == network)
                 {
-                    _ = this[toRead[toRead.Count - 1]];
-                    toRead.RemoveAt(toRead.Count - 1);
+                    frame.Restart();
+                    while (toRead.Count > 0 && frame.Elapsed.TotalMilliseconds < FrameBudgetMs)
+                    {
+                        var track = toRead[toRead.Count - 1];
+                        toRead.RemoveAt(toRead.Count - 1);
+                        try
+                        {
+                            _ = this[track];
+                        }
+                        catch (Exception e)
+                        {
+                            readFailed[track] = true;
+                            Main.Mod?.Logger.LogException($"Track Ahead: could not read track {track}", e);
+                        }
+                    }
+                    yield return null;
                 }
-                yield return null;
             }
-            reading = false;
+            finally
+            {
+                reading = false;
+            }
         }
 
         /// <summary>Puts these tracks next for their posted limits, and starts the work if it has not begun.</summary>
@@ -125,50 +188,71 @@ namespace CommsTablet.Map
             if (runner == null)
                 return;
             filling = true;
-            runner.Run(FillPosted());
+            try
+            {
+                runner.Run(FillPosted());
+            }
+            catch
+            {
+                filling = false;
+                throw;
+            }
         }
 
         private IEnumerator FillPosted()
         {
             var worker = new SignLimitWorker();
-            var frame = new Stopwatch();
-            while (MapWorld.HasNetwork && MapWorld.Network == network)
+            try
             {
-                frame.Restart();
-                TakeFinished(worker);
-                var more = CopyCurves(worker, frame);
-                SlowestFrameMs = Math.Max(SlowestFrameMs, frame.Elapsed.TotalMilliseconds);
-                if (!more && worker.Unfinished == 0)
+                var frame = new Stopwatch();
+                while (MapWorld.HasNetwork && MapWorld.Network == network)
                 {
-                    PostedDone = true;
-                    break;
+                    frame.Restart();
+                    TakeFinished(worker);
+                    var more = CopyCurves(worker, frame);
+                    SlowestFrameMs = Math.Max(SlowestFrameMs, frame.Elapsed.TotalMilliseconds);
+                    if (!more && worker.Unfinished == 0)
+                    {
+                        PostedDone = true;
+                        break;
+                    }
+                    yield return null;
                 }
-                yield return null;
             }
-            worker.Stop();
-            filling = false;
+            finally
+            {
+                worker.Stop();
+                filling = false;
+            }
         }
 
         private void TakeFinished(SignLimitWorker worker)
         {
             while (worker.TryTake(out var result))
             {
+                try
+                {
 #if !PUBLIC_RELEASE
-                WorkTimesForTest.Add((result.Milliseconds, result.TrackLength));
+                    WorkTimesForTest.Add((result.Milliseconds, result.TrackLength));
 #endif
-                if (result.Limits == null)
-                {
-                    SignRules.Warn(result.Error);
-                    continue;
+                    if (result.Limits == null)
+                    {
+                        SignRules.Warn(result.Error);
+                        continue;
+                    }
+                    posted[result.Track] = result.Limits;
+                    PostedCount++;
+                    // A track nobody has looked at takes its limits when it is first read.
+                    var shape = shapes[result.Track];
+                    if (shape != null)
+                    {
+                        shape.SetPosted(result.Limits);
+                        PostedChanges++;
+                    }
                 }
-                posted[result.Track] = result.Limits;
-                PostedCount++;
-                // A track nobody has looked at takes its limits when it is first read.
-                var shape = shapes[result.Track];
-                if (shape != null)
+                catch (Exception e)
                 {
-                    shape.SetPosted(result.Limits);
-                    PostedChanges++;
+                    SignRules.Warn(e);
                 }
             }
         }
@@ -181,20 +265,29 @@ namespace CommsTablet.Map
                 if (!NextTrack(out var index))
                     return false;
                 sent[index] = true;
-                var track = network.Tracks[index];
-                var length = network.Graph.Length(index);
-                if (!SignRules.Signed(track, length))
-                    continue;
+                try
+                {
+                    var track = network.Tracks[index];
+                    if (track == null)
+                        continue;
+                    var length = network.Graph.Length(index);
+                    if (!SignRules.Signed(track, length))
+                        continue;
 #if !PUBLIC_RELEASE
-                var began = frame.Elapsed.TotalMilliseconds;
+                    var began = frame.Elapsed.TotalMilliseconds;
 #endif
-                var curve = SignRules.Copy(track);
-                if (curve == null)
-                    continue;
+                    var curve = SignRules.Copy(track);
+                    if (curve == null)
+                        continue;
 #if !PUBLIC_RELEASE
-                CopyTimesForTest.Add((frame.Elapsed.TotalMilliseconds - began, length, curve.KnotCount));
+                    CopyTimesForTest.Add((frame.Elapsed.TotalMilliseconds - began, length, curve.KnotCount));
 #endif
-                worker.Add(index, curve, length);
+                    worker.Add(index, curve, length);
+                }
+                catch (Exception e)
+                {
+                    SignRules.Warn(e);
+                }
             }
             return true;
         }
@@ -240,6 +333,7 @@ namespace CommsTablet.Map
             var shape = TrackShape.From(offsets, heights, places, YardOf(track.name));
             if (posted[index] != null)
                 shape.SetPosted(posted[index]);
+            ShapesRead++;
             return shape;
         }
 

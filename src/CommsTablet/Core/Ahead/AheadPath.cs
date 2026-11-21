@@ -143,9 +143,6 @@ namespace CommsTablet.Core.Ahead
         /// <summary>The length of the whole route, if this is the near part of one; else <see cref="Length"/>.</summary>
         public double WholeLength { get; private set; }
 
-        /// <summary>How far short of a destination track's far end a train stops at the most, in meters.</summary>
-        private const double EndClearance = 10;
-
         /// <summary>The leg at a distance along the path; the first or last beyond its ends.</summary>
         public AheadLeg LegAt(double distance)
         {
@@ -222,17 +219,22 @@ namespace CommsTablet.Core.Ahead
                 {
                     var piece = leg.Pieces[i];
                     var begins = leg.PieceStart(i);
+                    var finalPiece = last && i == leg.Pieces.Count - 1;
+                    // Compute the arrival stop from the untrimmed original route entry end before trimming traveled distance.
+                    var to = finalPiece && intoLastTrack.HasValue
+                        ? Arrival(graph, piece, intoLastTrack.Value)
+                        : piece.To;
+                    var pieceLength = Math.Abs(to - piece.From);
                     if (i > 0 && begins >= skip)
                         path.AddRouteSwitch(graph, leg.Pieces[i - 1], piece, taken, selectedBranch);
-                    if (begins + piece.Length <= skip)
+                    if (begins + pieceLength <= skip)
                         continue;
-                    var sign = (int)piece.Direction;
+                    var direction = finalPiece && pieceLength > 1e-6
+                        ? (to > piece.From ? TrackDirection.Forward : TrackDirection.Backward)
+                        : piece.Direction;
+                    var sign = (int)direction;
                     var from = begins >= skip ? piece.From : piece.From + sign * (skip - begins);
-                    var to = piece.To;
-                    var finalPiece = last && i == leg.Pieces.Count - 1;
-                    if (finalPiece && intoLastTrack.HasValue)
-                        to = Arrival(graph, piece, from, to, intoLastTrack.Value);
-                    var exit = piece.Direction.ExitEnd();
+                    var exit = direction.ExitEnd();
                     var leavesTrack = Math.Abs(to - graph.OffsetOf(piece.Track, exit)) < 1e-6;
                     var links = graph.Links(piece.Track, exit);
                     path.AddLeg(piece.Track, from, to, leavesTrack && i < leg.Pieces.Count - 1 && links.Length > 0 && links[0].NeedsJunction);
@@ -264,16 +266,11 @@ namespace CommsTablet.Core.Ahead
             return near;
         }
 
-        // A route ends halfway along its track whichever way it arrives; a train
-        // arriving from an end runs in until it is all there, or the track runs out.
-        private static double Arrival(TrackGraph graph, RoutePiece piece, double from, double to, double into)
-        {
-            var entered = Math.Abs(from - graph.OffsetOf(piece.Track, TrackEnd.Start)) < 1e-6 || Math.Abs(from - graph.OffsetOf(piece.Track, TrackEnd.End)) < 1e-6;
-            if (!entered)
-                return to;
-            var room = Math.Max(0, graph.Length(piece.Track) - EndClearance);
-            return from + (int)piece.Direction * Math.Min(room, into);
-        }
+        // A route ends halfway along its track whichever way it arrives (or already at the
+        // siding stop when GoalIntoTrack was set); a train arriving from an end runs in until
+        // it is all there, or the track runs out.
+        private static double Arrival(TrackGraph graph, RoutePiece piece, double into) =>
+            Router.SidingStop(graph.Length(piece.Track), piece.From, into, piece.To);
 
         private void AddTrain(TrackGraph graph, TrackPosition tail, TrackDirection direction, double trainLength, Func<int, int> selectedBranch)
         {

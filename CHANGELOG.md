@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5 (2026-11-21)
+
+- **Spawn** names the locos and cars it leaves out, and why: a license
+  you don't hold, or a garage not unlocked.
+- **Settings:** Realistic Firing 1.24.3 and Realistic Brakes 1.4.5 put
+  their give buttons under Equipment.
+- Performance improvements and bug fixes.
+
 ## 0.1.4 (2026-11-20)
 
 - **Track Ahead**, a new app: the line ahead of your train on one screen,

@@ -23,12 +23,23 @@ namespace CommsTablet.Tablet
     /// </summary>
     internal sealed class TabletChangeMode : TabletCarMode
     {
+        private const float PollInterval = 0.25f;
+
         private readonly List<CarChangerLink.Modification> modifications = new List<CarChangerLink.Modification>();
         // Destroyed this frame: off already, though Car Changer still finds them until the frame ends.
         private readonly HashSet<Object> leaving = new HashSet<Object>();
+        // Exact validated components awaiting confirmation for Pending.
+        private List<Object> pendingRemovals;
         // Put on the frame after an override took the clashing ones off.
         private CarChangerLink.Modification adding;
         private (string content, string action) shown;
+        private (TrainCar car, TrainCar pointed, CarChangerLink.Modification last, CarChangerLink.Modification pending, CarChangerLink.Modification adding, int version) shownKey;
+        private bool displayValid;
+        private float nextPollAt;
+        private int stateVersion;
+        private TrainCar onCar;
+        private List<object> cachedOn;
+        private float onPollAt = -1f;
 
         /// <summary>The chosen car's modifications, by name.</summary>
         internal IReadOnlyList<CarChangerLink.Modification> Modifications => modifications;
@@ -52,16 +63,26 @@ namespace CommsTablet.Tablet
             modifications.Clear();
             modifications.AddRange(CarChangerLink.For(Car));
             Last = Pending = adding = null;
+            pendingRemovals = null;
             Reason = null;
             leaving.Clear();
+            onCar = null;
+            cachedOn = null;
+            onPollAt = -1f;
+            stateVersion++;
         }
 
         protected override void OnReleased()
         {
             modifications.Clear();
             Last = Pending = adding = null;
+            pendingRemovals = null;
             Reason = null;
             leaving.Clear();
+            onCar = null;
+            cachedOn = null;
+            onPollAt = -1f;
+            stateVersion++;
         }
 
         protected override void ApplyLast()
@@ -79,6 +100,7 @@ namespace CommsTablet.Tablet
             Last = modifications[index];
             // As the radio's override question, stepping away answers no.
             Pending = null;
+            pendingRemovals = null;
             Reason = null;
             Redisplay();
             return true;
@@ -96,8 +118,27 @@ namespace CommsTablet.Tablet
             return on;
         }
 
+        private List<object> CachedOnNow()
+        {
+            if (Car == null)
+                return null;
+            var now = Time.unscaledTime;
+            if (onCar == Car && cachedOn != null && now < onPollAt)
+                return cachedOn;
+            cachedOn = OnNow();
+            onCar = Car;
+            onPollAt = now + PollInterval;
+            return cachedOn;
+        }
+
         /// <summary>Whether <paramref name="modification"/> is on the chosen car (or going on the next frame).</summary>
-        internal bool IsOn(CarChangerLink.Modification modification) => modification != null && OnNow().Contains(modification.Config);
+        internal bool IsOn(CarChangerLink.Modification modification)
+        {
+            if (modification == null)
+                return false;
+            var on = CachedOnNow();
+            return on != null && on.Contains(modification.Config);
+        }
 
         /// <summary>
         /// Switches <paramref name="modification"/> on the chosen car, by Car
@@ -115,7 +156,9 @@ namespace CommsTablet.Tablet
             }
             Last = modification;
             var pending = Pending;
+            var confirmedRemovals = pendingRemovals;
             Pending = null;
+            pendingRemovals = null;
             Reason = null;
             Redisplay();
             if (adding != null)
@@ -123,14 +166,32 @@ namespace CommsTablet.Tablet
                 Reason = "Car Changer is still putting a change on";
                 return false;
             }
-            var on = OnNow();
-            if (on.Contains(modification.Config))
+            leaving.RemoveWhere(c => c == null);
+            if (!CarChangerLink.TryAppliedOn(Car, leaving, out var applied))
             {
-                leaving.UnionWith(CarChangerLink.Remove(Car, c => c == modification.Config));
+                Reason = "Car Changer could not read the car's changes; see the log";
+                Done(false);
+                return false;
+            }
+            var matching = applied.Where(a => Equals(a.Config, modification.Config)).Select(a => a.Component).ToList();
+            if (matching.Count > 0)
+            {
+                if (pending == modification)
+                {
+                    // Already installed (e.g. via another tablet) while awaiting swap confirmation: keep it installed.
+                    Done(true);
+                    return true;
+                }
+                leaving.UnionWith(CarChangerLink.Remove(matching));
                 Done(true);
                 return true;
             }
-            var clashes = CarChangerLink.Clashes(modification.Config, on);
+            if (!CarChangerLink.TryClashes(modification.Config, applied, out var clashes))
+            {
+                Reason = "Car Changer could not check conflicts; see the log";
+                Done(false);
+                return false;
+            }
             if (clashes.Count == 0)
             {
                 var added = CarChangerLink.Add(Car, modification.Config);
@@ -139,17 +200,23 @@ namespace CommsTablet.Tablet
                 Done(added);
                 return added;
             }
-            if (pending != modification)
+            var removalSet = clashes.Select(c => c.Component).ToList();
+            var sameRemovals = pending == modification
+                && confirmedRemovals != null
+                && confirmedRemovals.Count == removalSet.Count
+                && removalSet.All(confirmedRemovals.Contains);
+            if (!sameRemovals)
             {
                 // The radio's "Modification is incompatible with others" and "Override?".
                 Pending = modification;
-                var names = clashes.Select(c => modifications.FirstOrDefault(m => m.Config == c)?.Name ?? "another change");
+                pendingRemovals = removalSet;
+                var names = clashes.Select(c => modifications.FirstOrDefault(m => Equals(m.Config, c.Config))?.Name ?? "another change");
                 Reason = $"Clashes with {string.Join(", ", names)}; press again to swap";
                 Done(false);
                 return false;
             }
-            // Asked again: the changes it clashes with go off, and it goes on the next frame (the radio's same-frame caution).
-            leaving.UnionWith(CarChangerLink.Remove(Car, c => on.Contains(c) && !CarChangerLink.Combine(c, modification.Config)));
+            // Confirmed: remove the exact validated clashing set, and add the new change next frame (the radio's same-frame caution).
+            leaving.UnionWith(CarChangerLink.Remove(removalSet));
             adding = modification;
             Car.StartCoroutine(AddNextFrame(Car, modification));
             Done(true);
@@ -163,7 +230,8 @@ namespace CommsTablet.Tablet
                 adding = null;
             if (car != null)
                 CarChangerLink.Add(car, modification.Config);
-            Redisplay();
+            if (this != null)
+                Redisplay();
         }
 
         private void Done(bool ok)
@@ -172,7 +240,13 @@ namespace CommsTablet.Tablet
             Redisplay();
         }
 
-        protected override void Redisplay() => shown = default;
+        protected override void Redisplay()
+        {
+            shown = default;
+            displayValid = false;
+            onPollAt = -1f;
+            stateVersion++;
+        }
 
         // Car Changer's own words, in the game's language, else English.
         private static string Word(string key, string english)
@@ -185,6 +259,16 @@ namespace CommsTablet.Tablet
         {
             if (display == null)
                 return;
+            var key = (Car, Pointed, Last, Pending, adding, stateVersion);
+            var now = Time.unscaledTime;
+            var pollDue = now >= nextPollAt;
+            if (displayValid && key == shownKey && !pollDue)
+                return;
+            shownKey = key;
+            displayValid = true;
+            if (pollDue && Car != null)
+                onPollAt = -1f;
+            nextPollAt = now + PollInterval;
             string content, action;
             if (Car == null)
             {
@@ -193,8 +277,8 @@ namespace CommsTablet.Tablet
             }
             else if (Last == null)
             {
-                var on = OnNow();
-                content = $"{Car.ID}: {on.Count} of {modifications.Count} on";
+                var on = CachedOnNow();
+                content = $"{Car.ID}: {(on != null ? on.Count : 0)} of {modifications.Count} on";
                 action = ActionWord(false);
             }
             else

@@ -26,7 +26,8 @@ the tablet just as you would the radio.
 
 - **Vehicles:** Crew (summon your crew vehicles; Career), Buy (Custom Car
   Loader's work trains; Career with CCL), and Spawn (locos and cars, a
-  picture of each livery).
+  picture of each livery; what it leaves out is named at the bottom, with
+  why: a license you don't hold, or a garage not unlocked).
 - **Cargo:** load and unload the cars you spawned.
 - **Workshop:** Paint (aim at a car first, then pick from pictures of it in
   each paint; Skin Manager's skins when installed), Wheels (Rearranged's

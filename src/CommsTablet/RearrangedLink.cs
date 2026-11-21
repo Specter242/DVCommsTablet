@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
@@ -41,11 +42,13 @@ namespace CommsTablet
             {
                 get
                 {
+                    if (string.IsNullOrEmpty(Name))
+                        return null;
                     // "0-4+4-0T": a plus joins two engines' drivers, a T marks a tank engine.
                     var whyte = Name.Split(' ')[0].TrimEnd('T', 't').Split('-', '+');
                     var groups = new int[whyte.Length];
                     for (var i = 0; i < whyte.Length; i++)
-                        if (!int.TryParse(whyte[i], out groups[i]))
+                        if (!int.TryParse(whyte[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out groups[i]))
                             return KnownWheels();
                     return whyte.Length >= 3 ? groups : KnownWheels();
                 }
@@ -54,6 +57,8 @@ namespace CommsTablet
             // The S060's arrangements named for their builders, not their wheels.
             private int[] KnownWheels()
             {
+                if (string.IsNullOrEmpty(Name))
+                    return null;
                 var name = Name.ToLowerInvariant();
                 if (name.Contains("meyer")) return new[] { 0, 4, 4, 0 };
                 if (name.Contains("shay")) return new[] { 0, 4, 4, 0 };
@@ -154,8 +159,10 @@ namespace CommsTablet
                         if (Invoke<bool>(S060Supported, id))
                         {
                             var name = (string)S060Name.GetValue(S060Decode.Invoke(null, new object[] { id }));
-                            list.Add(new Arrangement(id, name, name.IndexOf("meyer", StringComparison.OrdinalIgnoreCase) >= 0
-                                || name.IndexOf("shay", StringComparison.OrdinalIgnoreCase) >= 0));
+                            var articulated = !string.IsNullOrEmpty(name)
+                                && (name.IndexOf("meyer", StringComparison.OrdinalIgnoreCase) >= 0
+                                    || name.IndexOf("shay", StringComparison.OrdinalIgnoreCase) >= 0);
+                            list.Add(new Arrangement(id, name, articulated));
                         }
                 }
             }

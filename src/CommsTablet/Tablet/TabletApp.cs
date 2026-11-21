@@ -73,8 +73,12 @@ namespace CommsTablet.Tablet
     /// </summary>
     internal static class TabletIcons
     {
+        private const int FastMisses = 3;
+        private const float RetrySeconds = 30f, LongRetrySeconds = 120f;
+
         private static readonly Dictionary<string, Sprite> found = new Dictionary<string, Sprite>();
-        private static readonly Dictionary<string, float> missedAt = new Dictionary<string, float>();
+        private static readonly Dictionary<string, (float at, int count)> missed = new Dictionary<string, (float, int)>();
+        private static bool sceneHooked;
 
         internal static Sprite Find(string name)
         {
@@ -82,18 +86,44 @@ namespace CommsTablet.Tablet
                 return null;
             if (found.TryGetValue(name, out var sprite) && sprite != null)
                 return sprite;
-            // A miss is looked for again only now and then: the search walks every loaded sprite.
-            if (missedAt.TryGetValue(name, out var at) && Time.unscaledTime - at < 30f)
-                return null;
-            sprite = FromItems(name) ?? Resources.FindObjectsOfTypeAll<Sprite>().FirstOrDefault(s => s != null && s.name == name);
+            if (!sceneHooked)
+            {
+                sceneHooked = true;
+                UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
+            }
+            // A miss is retried a few times at RetrySeconds, then falls back to LongRetrySeconds
+            // (reset on scene load) so Resources.FindObjectsOfTypeAll does not hitch frequently.
+            var missCount = 0;
+            if (missed.TryGetValue(name, out var miss))
+            {
+                missCount = miss.count;
+                var wait = missCount >= FastMisses ? LongRetrySeconds : RetrySeconds;
+                if (Time.unscaledTime - miss.at < wait)
+                    return null;
+            }
+            sprite = FromItems(name) ?? FromLoaded(name);
             if (sprite != null)
             {
                 found[name] = sprite;
-                missedAt.Remove(name);
+                missed.Remove(name);
             }
             else
-                missedAt[name] = Time.unscaledTime;
+                missed[name] = (Time.unscaledTime, missCount + 1);
             return sprite;
+        }
+
+        private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene _, UnityEngine.SceneManagement.LoadSceneMode __) => missed.Clear();
+
+        private static Sprite FromLoaded(string name)
+        {
+            var sprites = Resources.FindObjectsOfTypeAll<Sprite>();
+            for (var i = 0; i < sprites.Length; i++)
+            {
+                var s = sprites[i];
+                if (s != null && s.name == name)
+                    return s;
+            }
+            return null;
         }
 
         private static Sprite FromItems(string name)

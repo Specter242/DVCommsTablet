@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using UnityEngine;
 using UnityModManagerNet;
@@ -152,6 +153,11 @@ namespace CommsTablet.Tablet
             }
         }
 
+        private static readonly char[] CutChars = { '(', ':', '.', ';' };
+
+        /// <summary>Bumped whenever <see cref="Apply"/> writes a setting.</summary>
+        internal int Version { get; private set; }
+
         /// <summary>The rows Unity Mod Manager's window would draw now (what is visible follows other settings).</summary>
         internal List<SettingRow> Rows()
         {
@@ -171,6 +177,29 @@ namespace CommsTablet.Tablet
         }
 
         /// <summary>
+        /// Exact snapshot of container references and VisibleOn/InvisibleOn
+        /// results for a mod's settings. Returns false when a visible nested
+        /// value-type (struct) box is present, so rows holding boxed struct
+        /// copies are never cached across refreshes.
+        /// </summary>
+        internal bool TryVisibilitySnapshot(out VisibilitySnapshot snapshot)
+        {
+            var settings = Settings;
+            snapshot = new VisibilitySnapshot(Version);
+            if (settings == null)
+                return true;
+            try
+            {
+                return ModSettingsLink.CaptureVisibility(settings, settings.GetType(), DrawFieldMask.OnlyDrawAttr, 0, snapshot);
+            }
+            catch (Exception)
+            {
+                snapshot = null;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Changes a setting as Unity Mod Manager's window does (the field set,
         /// the settings' OnChange called) and saves it through the mod's own
         /// Save at once, so the tablet and the window always agree. What
@@ -185,6 +214,7 @@ namespace CommsTablet.Tablet
             {
                 row.Field.SetValue(row.Container, value);
                 row.WriteBack?.Invoke();
+                Version++;
             }
             catch (Exception e)
             {
@@ -214,13 +244,60 @@ namespace CommsTablet.Tablet
 
         private static string Short(string label)
         {
-            var cut = label.IndexOfAny(new[] { '(', ':', '.', ';' });
+            var cut = label.IndexOfAny(CutChars);
             var text = cut > 12 ? label.Substring(0, cut).TrimEnd() : label;
             return text.Length > 48 ? text.Substring(0, 46).TrimEnd() + "…" : text;
         }
     }
 
- internal static class ModSettingsLink
+ internal sealed class VisibilitySnapshot
+    {
+        internal struct NestedSlot
+        {
+            internal readonly byte Kind; // 0 = null, 1 = container, 2 = UnityEngine.Object
+            internal readonly object Obj;
+            internal readonly string Name;
+
+            internal NestedSlot(byte kind, object obj, string name)
+            {
+                Kind = kind;
+                Obj = obj;
+                Name = name;
+            }
+        }
+
+        internal readonly int Version;
+        internal readonly List<NestedSlot> Slots = new List<NestedSlot>();
+        internal readonly List<bool> Visibility = new List<bool>();
+
+        internal VisibilitySnapshot(int version)
+        {
+            Version = version;
+        }
+
+        internal bool SameAs(VisibilitySnapshot other)
+        {
+            if (other == null || Version != other.Version
+                || Slots.Count != other.Slots.Count
+                || Visibility.Count != other.Visibility.Count)
+                return false;
+            for (var i = 0; i < Slots.Count; i++)
+            {
+                var a = Slots[i];
+                var b = other.Slots[i];
+                if (a.Kind != b.Kind
+                    || !ReferenceEquals(a.Obj, b.Obj)
+                    || !string.Equals(a.Name, b.Name, StringComparison.Ordinal))
+                    return false;
+            }
+            for (var i = 0; i < Visibility.Count; i++)
+                if (Visibility[i] != other.Visibility[i])
+                    return false;
+            return true;
+        }
+    }
+
+    internal static class ModSettingsLink
     {
         internal const string Author = "Specter242";
 
@@ -356,25 +433,76 @@ namespace CommsTablet.Tablet
             return null;
         }
 
-        /// <summary>Unity Mod Manager's <c>UI.Draw</c>, as rows: which fields it draws, and how.</summary>
-        internal static void Walk(object container, Type type, DrawFieldMask mask, Action writeBack, List<SettingRow> rows, UnityModManager.ModEntry mod, int depth)
+        private struct PrefixMeta
         {
-            if (depth > 6)
-                return;
+            internal SettingKind Kind;
+            internal string Label;
+            internal float Space;
+        }
+
+        private sealed class ParsedRule
+        {
+            internal bool Valid;
+            internal FieldInfo Field;
+            internal PropertyInfo Property;
+            internal object Wanted;
+            internal int WantedHash;
+        }
+
+        private sealed class FieldMeta
+        {
+            internal FieldInfo Field;
+            internal bool HasDrawAttr;
+            internal bool IsPublic;
+            internal bool IsSerialized;
+            internal bool IsNotSerialized;
+            internal bool IsIgnore;
+            internal bool IsOneTimeBool;
+            internal bool IsCustomGui;
+            internal bool IsNested;
+            internal bool IsValueType;
+            internal string VisibleOn;
+            internal string InvisibleOn;
+            internal ParsedRule VisibleRule;
+            internal ParsedRule InvisibleRule;
+            internal PrefixMeta[] Prefixes;
+            internal string RawLabel;
+            internal string BadgedLabel;
+            internal string Badge;
+            internal string Description;
+            internal double Min, Max;
+            internal int Precision;
+            internal SettingKind Kind;
+            internal DrawFieldMask? FieldMask;
+        }
+
+        private sealed class TypeMeta
+        {
+            internal DrawFieldMask? TypeMask;
+            internal FieldMeta[] Fields;
+        }
+
+        private static readonly Dictionary<Type, TypeMeta> typeCache = new Dictionary<Type, TypeMeta>();
+        private static readonly Dictionary<(Type, string), ParsedRule> ruleCache = new Dictionary<(Type, string), ParsedRule>();
+        private static readonly Dictionary<(Type, object), string> enumTextCache = new Dictionary<(Type, object), string>();
+
+        private static TypeMeta MetaOf(Type type)
+        {
+            if (typeCache.TryGetValue(type, out var cached))
+                return cached;
+            var meta = new TypeMeta();
             foreach (DrawFieldsAttribute fields in type.GetCustomAttributes(typeof(DrawFieldsAttribute), false))
-                mask = fields.Mask;
-            foreach (var f in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                meta.TypeMask = fields.Mask;
+            var rawFields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var list = new FieldMeta[rawFields.Length];
+            for (var i = 0; i < rawFields.Length; i++)
             {
+                var f = rawFields[i];
+                var ft = f.FieldType;
                 var draw = f.GetCustomAttributes(typeof(DrawAttribute), false).OfType<DrawAttribute>().LastOrDefault();
-                if (draw != null)
+                var hasDrawAttr = draw != null;
+                if (draw == null)
                 {
-                    if (draw.Type == DrawType.Ignore || !Visible(draw, container, type))
-                        continue;
-                }
-                else
-                {
-                    if (Skipped(f, mask))
-                        continue;
                     draw = new DrawAttribute();
                     if (f.GetCustomAttributes(typeof(RangeAttribute), false).FirstOrDefault() is RangeAttribute range)
                     {
@@ -383,58 +511,33 @@ namespace CommsTablet.Tablet
                         draw.Max = range.max;
                     }
                 }
-                // A one-time action drawn as a switch ("unticks itself") is the mod's own window's button:
-                // the tablet saves a change at once, so a tick here would be saved and act again at the
-                // next start. Realistic Firing 1.23.0, as published, draws six such switches.
-                if (f.FieldType == typeof(bool) && OneTimeAction(f, draw))
-                    continue;
-                // Drawn before the field, in their order, as that window draws them.
+                var prefixes = new List<PrefixMeta>();
                 foreach (var attribute in f.GetCustomAttributes(false).OfType<PropertyAttribute>().OrderBy(a => a.order))
                 {
                     if (attribute is SpaceAttribute space)
-                        rows.Add(new SettingRow { Kind = SettingKind.Space, Space = space.height });
+                        prefixes.Add(new PrefixMeta { Kind = SettingKind.Space, Space = space.height });
                     else if (attribute is DrawSpaceAttribute drawSpace)
-                        rows.Add(new SettingRow { Kind = SettingKind.Space, Space = drawSpace.Height });
+                        prefixes.Add(new PrefixMeta { Kind = SettingKind.Space, Space = drawSpace.Height });
                     else if (attribute is HeaderAttribute header && !string.IsNullOrEmpty(header.header))
-                        rows.Add(new SettingRow { Kind = SettingKind.Heading, Label = header.header });
+                        prefixes.Add(new PrefixMeta { Kind = SettingKind.Heading, Label = header.header });
                     else if (attribute is DrawHeaderAttribute drawHeader && !string.IsNullOrEmpty(drawHeader.Header))
-                        rows.Add(new SettingRow { Kind = SettingKind.Heading, Label = drawHeader.Header });
+                        prefixes.Add(new PrefixMeta { Kind = SettingKind.Heading, Label = drawHeader.Header });
                 }
-                var label = draw.Label ?? f.Name;
-                var description = Flowing(draw.Tooltip);
-                var ft = f.FieldType;
+                DrawFieldMask? fieldMask = null;
+                foreach (DrawFieldsAttribute fields in f.GetCustomAttributes(typeof(DrawFieldsAttribute), false))
+                    fieldMask = fields.Mask;
+                var rawLabel = draw.Label ?? f.Name;
+                var badgedLabel = Badged(rawLabel, out var badge);
                 var nested = ((ft.IsClass && !ft.IsArray && !typeof(Delegate).IsAssignableFrom(ft)) || (ft.IsValueType && !ft.IsPrimitive && !ft.IsEnum))
                     && !SpecialTypes.Contains(ft.Name);
-                if (nested)
-                {
-                    var value = f.GetValue(container);
-                    if (value is UnityEngine.Object unityObject)
-                    {
-                        rows.Add(Shown(label, f, container, unityObject.name));
-                        continue;
-                    }
-                    if (value == null)
-                        continue;
-                    var inner = mask;
-                    foreach (DrawFieldsAttribute fields in f.GetCustomAttributes(typeof(DrawFieldsAttribute), false))
-                        inner = fields.Mask;
-                    if (!string.IsNullOrEmpty(label))
-                        rows.Add(new SettingRow { Kind = SettingKind.Heading, Label = label });
-                    Action back = ft.IsValueType ? () =>
-                    {
-                        f.SetValue(container, value);
-                        writeBack?.Invoke();
-                    } : writeBack;
-                    Walk(value, ft, inner, back, rows, mod, depth + 1);
-                    continue;
-                }
+                var isFlagsEnum = ft.IsEnum && ft.GetCustomAttributes(typeof(FlagsAttribute), false).Length != 0;
                 var kind = draw.Type;
                 if (kind == DrawType.Auto)
                 {
                     if (ft == typeof(bool))
                         kind = DrawType.Toggle;
                     else if (ft.IsEnum)
-                        kind = ft.GetCustomAttributes(typeof(FlagsAttribute), false).Length == 0 ? DrawType.PopupList : DrawType.PopupToggleMulti;
+                        kind = !isFlagsEnum ? DrawType.PopupList : DrawType.PopupToggleMulti;
                     else if (Numeric(ft))
                         kind = DrawType.Field;
                     else if (ft == typeof(KeyBinding))
@@ -442,22 +545,182 @@ namespace CommsTablet.Tablet
                     else if (typeof(Delegate).IsAssignableFrom(ft))
                         kind = DrawType.CustomGUI;
                 }
-                if (kind == DrawType.CustomGUI)
-                    continue;
-                var row = new SettingRow
-                {
-                    Label = Badged(label, out var badge), Badge = badge, Description = description,
-                    Field = f, Container = container, WriteBack = writeBack, Min = draw.Min, Max = draw.Max, Precision = draw.Precision,
-                };
+                SettingKind settingKind;
                 if (kind == DrawType.Toggle && ft == typeof(bool))
-                    row.Kind = SettingKind.Toggle;
-                else if ((kind == DrawType.PopupList || kind == DrawType.ToggleGroup) && ft.IsEnum && ft.GetCustomAttributes(typeof(FlagsAttribute), false).Length == 0)
-                    row.Kind = SettingKind.Choice;
+                    settingKind = SettingKind.Toggle;
+                else if ((kind == DrawType.PopupList || kind == DrawType.ToggleGroup) && ft.IsEnum && !isFlagsEnum)
+                    settingKind = SettingKind.Choice;
                 else if ((kind == DrawType.Slider || kind == DrawType.Field) && Numeric(ft))
-                    row.Kind = SettingKind.Number;
+                    settingKind = SettingKind.Number;
                 else
-                    row.Kind = SettingKind.Shown;
-                rows.Add(row);
+                    settingKind = SettingKind.Shown;
+
+                var isIgnore = hasDrawAttr && draw.Type == DrawType.Ignore;
+                var visibleOn = hasDrawAttr && !isIgnore && !string.IsNullOrEmpty(draw.VisibleOn) ? draw.VisibleOn : null;
+                var invisibleOn = hasDrawAttr && !isIgnore && visibleOn == null && !string.IsNullOrEmpty(draw.InvisibleOn) ? draw.InvisibleOn : null;
+                list[i] = new FieldMeta
+                {
+                    Field = f,
+                    HasDrawAttr = hasDrawAttr,
+                    IsPublic = f.IsPublic,
+                    IsSerialized = f.GetCustomAttributes(typeof(SerializeField), false).Length != 0,
+                    IsNotSerialized = f.IsNotSerialized,
+                    IsIgnore = isIgnore,
+                    IsOneTimeBool = ft == typeof(bool) && OneTimeAction(f, draw),
+                    IsCustomGui = kind == DrawType.CustomGUI,
+                    IsNested = nested,
+                    IsValueType = ft.IsValueType,
+                    VisibleOn = visibleOn,
+                    InvisibleOn = invisibleOn,
+                    VisibleRule = visibleOn != null ? ResolveRule(visibleOn, type) : null,
+                    InvisibleRule = invisibleOn != null ? ResolveRule(invisibleOn, type) : null,
+                    Prefixes = prefixes.Count > 0 ? prefixes.ToArray() : Array.Empty<PrefixMeta>(),
+                    RawLabel = rawLabel,
+                    BadgedLabel = badgedLabel,
+                    Badge = badge,
+                    Description = Flowing(draw.Tooltip),
+                    Min = draw.Min,
+                    Max = draw.Max,
+                    Precision = draw.Precision,
+                    Kind = settingKind,
+                    FieldMask = fieldMask,
+                };
+            }
+            meta.Fields = list;
+            typeCache[type] = meta;
+            return meta;
+        }
+
+        private static bool IsFieldVisible(FieldMeta fm, object container, Type type)
+        {
+            if (fm.VisibleRule != null)
+                return EvaluateRule(fm.VisibleRule, container, fm.VisibleOn, type) == true;
+            if (fm.InvisibleRule != null)
+                return EvaluateRule(fm.InvisibleRule, container, fm.InvisibleOn, type) == false;
+            return true;
+        }
+
+        /// <summary>
+        /// Captures exact container references and VisibleOn/InvisibleOn outcomes.
+        /// Returns false if any visible nested field is a value type (struct), because
+        /// reflection boxes a fresh copy on each GetValue and cached rows would go stale.
+        /// </summary>
+        internal static bool CaptureVisibility(object container, Type type, DrawFieldMask mask, int depth, VisibilitySnapshot snapshot)
+        {
+            if (container == null)
+                return true;
+            snapshot.Slots.Add(new VisibilitySnapshot.NestedSlot(1, container, null));
+            if (depth > 6)
+                return true;
+            var meta = MetaOf(type);
+            if (meta.TypeMask.HasValue)
+                mask = meta.TypeMask.Value;
+            var fields = meta.Fields;
+            for (var i = 0; i < fields.Length; i++)
+            {
+                var fm = fields[i];
+                if (fm.HasDrawAttr)
+                {
+                    if (fm.IsIgnore)
+                        continue;
+                    var vis = IsFieldVisible(fm, container, type);
+                    if (fm.VisibleRule != null || fm.InvisibleRule != null)
+                        snapshot.Visibility.Add(vis);
+                    if (!vis)
+                        continue;
+                }
+                else if (Skipped(fm, mask))
+                    continue;
+                if (fm.IsOneTimeBool || !fm.IsNested)
+                    continue;
+                if (fm.Field.FieldType.IsValueType)
+                    return false;
+                var value = fm.Field.GetValue(container);
+                if (value is UnityEngine.Object unityObject)
+                {
+                    snapshot.Slots.Add(new VisibilitySnapshot.NestedSlot(2, unityObject, unityObject.name));
+                    continue;
+                }
+                if (value == null)
+                {
+                    snapshot.Slots.Add(new VisibilitySnapshot.NestedSlot(0, null, null));
+                    continue;
+                }
+                var inner = fm.FieldMask ?? mask;
+                if (!CaptureVisibility(value, fm.Field.FieldType, inner, depth + 1, snapshot))
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>Unity Mod Manager's <c>UI.Draw</c>, as rows: which fields it draws, and how.</summary>
+        internal static void Walk(object container, Type type, DrawFieldMask mask, Action writeBack, List<SettingRow> rows, UnityModManager.ModEntry mod, int depth)
+        {
+            if (depth > 6)
+                return;
+            var meta = MetaOf(type);
+            if (meta.TypeMask.HasValue)
+                mask = meta.TypeMask.Value;
+            var fields = meta.Fields;
+            for (var i = 0; i < fields.Length; i++)
+            {
+                var fm = fields[i];
+                if (fm.HasDrawAttr)
+                {
+                    if (fm.IsIgnore || !IsFieldVisible(fm, container, type))
+                        continue;
+                }
+                else if (Skipped(fm, mask))
+                    continue;
+                // A one-time action drawn as a switch ("unticks itself") is the mod's own window's button:
+                // the tablet saves a change at once, so a tick here would be saved and act again at the
+                // next start. Realistic Firing 1.23.0, as published, draws six such switches.
+                if (fm.IsOneTimeBool)
+                    continue;
+                // Drawn before the field, in their order, as that window draws them.
+                var prefixes = fm.Prefixes;
+                for (var p = 0; p < prefixes.Length; p++)
+                {
+                    var prefix = prefixes[p];
+                    rows.Add(new SettingRow { Kind = prefix.Kind, Label = prefix.Label, Space = prefix.Space });
+                }
+                var f = fm.Field;
+                if (fm.IsNested)
+                {
+                    var value = f.GetValue(container);
+                    if (value is UnityEngine.Object unityObject)
+                    {
+                        rows.Add(Shown(fm.RawLabel, f, container, unityObject.name));
+                        continue;
+                    }
+                    if (value == null)
+                        continue;
+                    var inner = fm.FieldMask ?? mask;
+                    if (!string.IsNullOrEmpty(fm.RawLabel))
+                        rows.Add(new SettingRow { Kind = SettingKind.Heading, Label = fm.RawLabel });
+                    Action back = fm.IsValueType ? () =>
+                    {
+                        f.SetValue(container, value);
+                        writeBack?.Invoke();
+                    } : writeBack;
+                    Walk(value, f.FieldType, inner, back, rows, mod, depth + 1);
+                    continue;
+                }
+                if (fm.IsCustomGui)
+                    continue;
+                rows.Add(new SettingRow
+                {
+                    Kind = fm.Kind,
+                    Label = fm.BadgedLabel,
+                    Badge = fm.Badge,
+                    Description = fm.Description,
+                    Field = f,
+                    Container = container,
+                    WriteBack = writeBack,
+                    Min = fm.Min,
+                    Max = fm.Max,
+                    Precision = fm.Precision,
+                });
             }
         }
 
@@ -467,12 +730,11 @@ namespace CommsTablet.Tablet
             new SettingRow { Kind = SettingKind.Shown, Label = label + ": " + text, Field = f, Container = container };
 
         // Unity Mod Manager's rule for a field with no Draw attribute.
-        private static bool Skipped(FieldInfo f, DrawFieldMask mask)
+        private static bool Skipped(FieldMeta fm, DrawFieldMask mask)
         {
-            if ((mask & DrawFieldMask.OnlyDrawAttr) != 0 || ((mask & DrawFieldMask.SkipNotSerialized) != 0 && f.IsNotSerialized))
+            if ((mask & DrawFieldMask.OnlyDrawAttr) != 0 || ((mask & DrawFieldMask.SkipNotSerialized) != 0 && fm.IsNotSerialized))
                 return true;
-            var serialized = f.GetCustomAttributes(typeof(SerializeField), false).Length != 0;
-            return ((mask & DrawFieldMask.Public) == 0 || !f.IsPublic) && ((mask & DrawFieldMask.Serialized) == 0 || !serialized)
+            return ((mask & DrawFieldMask.Public) == 0 || !fm.IsPublic) && ((mask & DrawFieldMask.Serialized) == 0 || !fm.IsSerialized)
                 && ((mask & DrawFieldMask.Public) != 0 || (mask & DrawFieldMask.Serialized) != 0);
         }
 
@@ -494,6 +756,82 @@ namespace CommsTablet.Tablet
             return true;
         }
 
+        private static ParsedRule ResolveRule(string rule, Type type)
+        {
+            var key = (type, rule ?? "");
+            if (ruleCache.TryGetValue(key, out var cached))
+                return cached;
+            var parsed = new ParsedRule();
+            try
+            {
+                var parts = rule.Split('|');
+                if (parts.Length != 2)
+                {
+                    Unreadable(rule, type, "it must be 'Name|Value'");
+                    ruleCache[key] = parsed;
+                    return parsed;
+                }
+                const BindingFlags Instance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                Type valueType;
+                var name = parts[0].TrimStart('#');
+                if (parts[0].StartsWith("#"))
+                {
+                    var property = type.GetProperty(name, Instance);
+                    if (property == null || property.GetIndexParameters().Length != 0 || property.GetGetMethod(true) == null)
+                    {
+                        Unreadable(rule, type, $"no instance property {name}");
+                        ruleCache[key] = parsed;
+                        return parsed;
+                    }
+                    valueType = property.PropertyType;
+                    parsed.Property = property;
+                }
+                else
+                {
+                    var field = type.GetField(name, Instance);
+                    if (field == null)
+                    {
+                        Unreadable(rule, type, $"no instance field {name}");
+                        ruleCache[key] = parsed;
+                        return parsed;
+                    }
+                    valueType = field.FieldType;
+                    parsed.Field = field;
+                }
+                if (!valueType.IsPrimitive && !valueType.IsEnum)
+                {
+                    Unreadable(rule, type, $"{valueType.Name} is not a primitive or an enum");
+                    ruleCache[key] = parsed;
+                    return parsed;
+                }
+                var wanted = valueType.IsEnum ? Enum.Parse(valueType, parts[1]) : Convert.ChangeType(parts[1], valueType);
+                parsed.Wanted = wanted;
+                parsed.WantedHash = wanted != null ? wanted.GetHashCode() : 0;
+                parsed.Valid = true;
+            }
+            catch (Exception e)
+            {
+                Unreadable(rule, type, e.GetBaseException().Message);
+            }
+            ruleCache[key] = parsed;
+            return parsed;
+        }
+
+        private static bool? EvaluateRule(ParsedRule parsed, object container, string rule, Type type)
+        {
+            if (parsed == null || !parsed.Valid)
+                return null;
+            try
+            {
+                var current = parsed.Property != null ? parsed.Property.GetValue(container, null) : parsed.Field.GetValue(container);
+                return current != null && parsed.Wanted != null && current.GetHashCode() == parsed.WantedHash;
+            }
+            catch (Exception e)
+            {
+                return Unreadable(rule, type, e.GetBaseException().Message);
+            }
+        }
+
         /// <summary>
         /// Unity Mod Manager's VisibleOn and InvisibleOn ("Field|Value",
         /// "#Property|Value"), exactly as its <c>UI.DependsOn</c> (0.32.4)
@@ -503,43 +841,8 @@ namespace CommsTablet.Tablet
         /// not found there (it throws "not found"), nor here: null, where the
         /// rule cannot be read.
         /// </summary>
-        internal static bool? DependsOn(string rule, object container, Type type)
-        {
-            try
-            {
-                var parts = rule.Split('|');
-                if (parts.Length != 2)
-                    return Unreadable(rule, type, "it must be 'Name|Value'");
-                const BindingFlags Instance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-                Type valueType;
-                object current;
-                var name = parts[0].TrimStart('#');
-                if (parts[0].StartsWith("#"))
-                {
-                    var property = type.GetProperty(name, Instance);
-                    if (property == null || property.GetIndexParameters().Length != 0 || property.GetGetMethod(true) == null)
-                        return Unreadable(rule, type, $"no instance property {name}");
-                    valueType = property.PropertyType;
-                    current = property.GetValue(container, null);
-                }
-                else
-                {
-                    var field = type.GetField(name, Instance);
-                    if (field == null)
-                        return Unreadable(rule, type, $"no instance field {name}");
-                    valueType = field.FieldType;
-                    current = field.GetValue(container);
-                }
-                if (!valueType.IsPrimitive && !valueType.IsEnum)
-                    return Unreadable(rule, type, $"{valueType.Name} is not a primitive or an enum");
-                var wanted = valueType.IsEnum ? Enum.Parse(valueType, parts[1]) : Convert.ChangeType(parts[1], valueType);
-                return current != null && wanted != null && current.GetHashCode() == wanted.GetHashCode();
-            }
-            catch (Exception e)
-            {
-                return Unreadable(rule, type, e.GetBaseException().Message);
-            }
-        }
+        internal static bool? DependsOn(string rule, object container, Type type) =>
+            EvaluateRule(ResolveRule(rule, type), container, rule, type);
 
         private static bool? Unreadable(string rule, Type type, string why)
         {
@@ -596,21 +899,38 @@ namespace CommsTablet.Tablet
         /// </summary>
         internal static string EnumText(Type type, object value)
         {
+            var key = (type, value);
+            if (enumTextCache.TryGetValue(key, out var cached))
+                return cached;
             var name = Enum.GetName(type, value);
+            string text;
             if (name == null)
-                return value.ToString();
-            var member = type.GetField(name, BindingFlags.Public | BindingFlags.Static);
-            if (member != null)
+                text = value.ToString();
+            else
             {
-                foreach (var attribute in member.GetCustomAttributes(false))
+                text = null;
+                var member = type.GetField(name, BindingFlags.Public | BindingFlags.Static);
+                if (member != null)
                 {
-                    if (attribute is InspectorNameAttribute inspector && !string.IsNullOrEmpty(inspector.displayName))
-                        return inspector.displayName;
-                    if (attribute is DescriptionAttribute described && !string.IsNullOrEmpty(described.Description))
-                        return described.Description;
+                    foreach (var attribute in member.GetCustomAttributes(false))
+                    {
+                        if (attribute is InspectorNameAttribute inspector && !string.IsNullOrEmpty(inspector.displayName))
+                        {
+                            text = inspector.displayName;
+                            break;
+                        }
+                        if (attribute is DescriptionAttribute described && !string.IsNullOrEmpty(described.Description))
+                        {
+                            text = described.Description;
+                            break;
+                        }
+                    }
                 }
+                if (text == null)
+                    text = Words(name);
             }
-            return Words(name);
+            enumTextCache[key] = text;
+            return text;
         }
 
         /// <summary>

@@ -319,7 +319,7 @@ namespace CommsTablet.Tablet
             var camera = PlayerManager.ActiveCamera;
             if (camera == null)
                 return "No tablet: load a game first";
-            if (Session.IsMultiplayerClient)
+            if (Session.IsMultiplayerClientFresh)
                 return "In multiplayer, only the host can give tablets";
             var source = Template;
             if (source == null)

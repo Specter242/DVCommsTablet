@@ -14,7 +14,9 @@ namespace CommsTablet.Core.Ahead
     /// </summary>
     public sealed class RouteSearch
     {
+        private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private volatile bool done;
+        private volatile bool cancelled;
 
         public RouteSearch(TrackGraph graph, RouteRequest request)
         {
@@ -23,6 +25,9 @@ namespace CommsTablet.Core.Ahead
         }
 
         public bool Done => done;
+
+        /// <summary>Whether this search was asked to stop early.</summary>
+        public bool Cancelled => cancelled;
 
         /// <summary>The route, once done; null if there is none.</summary>
         public Route Route { get; private set; }
@@ -35,20 +40,43 @@ namespace CommsTablet.Core.Ahead
         /// <summary>Whether the route runs through standing cars, because no other way was found.</summary>
         public bool ThroughCars { get; private set; }
 
+        /// <summary>Asks the background search to stop early; safe to call from any thread and more than once.</summary>
+        public void Cancel()
+        {
+            cancelled = true;
+            cancellation.Cancel();
+        }
+
         private void Run(TrackGraph graph, RouteRequest request)
         {
+            var token = cancellation.Token;
             try
             {
+                if (token.IsCancellationRequested)
+                {
+                    Failure = RouteFailure.Cancelled;
+                    done = true;
+                    return;
+                }
                 var router = new Router(graph);
-                var route = router.Find(request, out var failure);
-                if (route == null && failure == RouteFailure.NoPath && request.Blocked != null)
+                var route = router.Find(request, out var failure, token);
+                if (!token.IsCancellationRequested && route == null && failure == RouteFailure.NoPath && request.Blocked != null)
                 {
                     request.Blocked = null;
-                    route = router.Find(request, out failure);
-                    ThroughCars = route != null;
+                    route = router.Find(request, out failure, token);
+                    ThroughCars = route != null && !token.IsCancellationRequested;
                 }
-                Route = route;
-                Failure = failure;
+                if (token.IsCancellationRequested)
+                {
+                    Route = null;
+                    ThroughCars = false;
+                    Failure = RouteFailure.Cancelled;
+                }
+                else
+                {
+                    Route = route;
+                    Failure = failure;
+                }
             }
             catch (Exception e)
             {

@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
 using CommsTablet.Core.Ahead;
+using CommsTablet.Core.Booklet;
 using CommsTablet.Core.Routing;
 using CommsTablet.Core.Tracks;
+using CommsTablet.Map;
 using DV.Signs;
 using HarmonyLib;
 
@@ -40,11 +43,168 @@ namespace CommsTablet.Check
         internal static void Run(Action<bool, string, string> reportTo)
         {
             report = reportTo;
+            CurveAndProfileChecks();
             Paths();
             Profiles();
             Times();
             SignRuleChecks();
             RouteChecks();
+            CorrectnessChecks();
+        }
+
+        private static bool Throws<TException>(Action action) where TException : Exception
+        {
+            try
+            {
+                action();
+                return false;
+            }
+            catch (TException)
+            {
+                return true;
+            }
+        }
+
+        private static void CurveAndProfileChecks()
+        {
+            // CurveSpeed.KmhForRadius: straight, tight, and moderate table boundaries.
+            var tableCases = new (double Radius, double Kmh)[]
+            {
+                (30, 10), (49.9, 10),
+                (50, 20), (69.9, 20),
+                (70, 30), (94.9, 30),
+                (95, 40), (129.9, 40),
+                (130, 50), (169.9, 50),
+                (170, 60), (229.9, 60),
+                (230, 70), (359.9, 70),
+                (360, 80), (699.9, 80),
+                (700, 90), (899.9, 90),
+                (900, 100), (1199.9, 100),
+                (1200, CurveSpeed.StraightKmh), (5000, CurveSpeed.StraightKmh), (double.PositiveInfinity, CurveSpeed.StraightKmh),
+            };
+            var badRadius = tableCases.Where(c => !Near(CurveSpeed.KmhForRadius(c.Radius), c.Kmh, 1e-9)).Select(c => $"{c.Radius}->{CurveSpeed.KmhForRadius(c.Radius)}").ToList();
+            check(badRadius.Count == 0, "CurveSpeed: KmhForRadius matches straight, tight, and moderate curve limits", string.Join(", ", badRadius));
+
+            // CurveSpeed.Radius: straight, coincident, and known circles in either winding order.
+            check(double.IsPositiveInfinity(CurveSpeed.Radius(new MapPoint(0, 0), new MapPoint(10, 0), new MapPoint(20, 0)))
+                  && double.IsPositiveInfinity(CurveSpeed.Radius(new MapPoint(5, 5), new MapPoint(5, 5), new MapPoint(10, 10))),
+                "CurveSpeed: Radius is infinite for collinear or coincident points");
+            MapPoint OnCircle(double r, double rad) => new MapPoint(r * Math.Cos(rad), r * Math.Sin(rad));
+            var r100 = CurveSpeed.Radius(OnCircle(100, 0), OnCircle(100, 0.2), OnCircle(100, 0.5));
+            var r100Rev = CurveSpeed.Radius(OnCircle(100, 0.5), OnCircle(100, 0.2), OnCircle(100, 0));
+            var r300 = CurveSpeed.Radius(OnCircle(300, -0.1), OnCircle(300, 0.1), OnCircle(300, 0.3));
+            check(Near(r100, 100, 1e-6) && Near(r100Rev, 100, 1e-6) && Near(r300, 300, 1e-6),
+                "CurveSpeed: Radius recovers circle radius regardless of point order", $"{r100:F3}, {r100Rev:F3}, {r300:F3}");
+
+            // CurveSpeed.Profile: < 3 points, straight + cap, tight & moderate curves, compound straight-bend-straight, non-zero offset start.
+            var tiny = CurveSpeed.Profile(new[] { 0.0, 10.0 }, new[] { new MapPoint(0, 0), new MapPoint(10, 0) }, capKmh: 50);
+            check(tiny.Count == 1 && Near(tiny.LimitAt(0) * 3.6, 50, 1e-6), "CurveSpeed: fewer than three points returns a capped single-entry profile");
+
+            var straightOffs = Enumerable.Range(0, 41).Select(i => 100.0 + i * 10.0).ToArray();
+            var straightPts = straightOffs.Select(d => new MapPoint(d, 0)).ToArray();
+            var straightProf = CurveSpeed.Profile(straightOffs, straightPts);
+            var cappedProf = CurveSpeed.Profile(straightOffs, straightPts, capKmh: 60);
+            check(Near(straightProf.OffsetAt(0), 0, 1e-9) && Near(straightProf.LimitAt(200) * 3.6, 120, 1e-6)
+                  && Near(cappedProf.LimitAt(200) * 3.6, 60, 1e-6),
+                "CurveSpeed: straight profile normalizes start offset to 0 and applies capKmh");
+
+            SpeedLimitProfile ArcProfile(double radius, double length)
+            {
+                var n = (int)(length / 5) + 1;
+                var offs = Enumerable.Range(0, n).Select(i => i * 5.0).ToArray();
+                var pts = offs.Select(d => new MapPoint(radius * Math.Sin(d / radius), radius * (1 - Math.Cos(d / radius)))).ToArray();
+                return CurveSpeed.Profile(offs, pts);
+            }
+            var tightProf = ArcProfile(60, 300);
+            var moderateProf = ArcProfile(200, 400);
+            check(Near(tightProf.LimitAt(150) * 3.6, 20, 1e-6) && Near(moderateProf.LimitAt(200) * 3.6, 60, 1e-6),
+                "CurveSpeed: tight (60 m -> 20 km/h) and moderate (200 m -> 60 km/h) curves get their table limits");
+
+            // Compound track: 200 m straight, 200 m curve (R=100 m -> 40 km/h), 200 m straight.
+            var compOffs = new List<double>();
+            var compPts = new List<MapPoint>();
+            const double R = 100.0;
+            for (var d = 0.0; d <= 200.0; d += 5.0)
+            {
+                compOffs.Add(d);
+                compPts.Add(new MapPoint(d, 0));
+            }
+            for (var d = 5.0; d <= 200.0; d += 5.0)
+            {
+                var a = d / R;
+                compOffs.Add(200.0 + d);
+                compPts.Add(new MapPoint(200.0 + R * Math.Sin(a), R * (1 - Math.Cos(a))));
+            }
+            var endAngle = 200.0 / R;
+            double ex = 200.0 + R * Math.Sin(endAngle), ez = R * (1 - Math.Cos(endAngle));
+            double tx = Math.Cos(endAngle), tz = Math.Sin(endAngle);
+            for (var d = 5.0; d <= 200.0; d += 5.0)
+            {
+                compOffs.Add(400.0 + d);
+                compPts.Add(new MapPoint(ex + d * tx, ez + d * tz));
+            }
+            var compProf = CurveSpeed.Profile(compOffs, compPts);
+            check(Near(compProf.LimitAt(50) * 3.6, 120, 1e-6)
+                  && Near(compProf.LimitAt(300) * 3.6, 40, 1e-6)
+                  && Near(compProf.LimitAt(550) * 3.6, 120, 1e-6)
+                  && Near(compProf.MinLimit(0, 600) * 3.6, 40, 1e-6),
+                "CurveSpeed: compound straight-curve-straight profile drops only through the curve");
+
+            // SpeedLimitProfile: Unlimited, constructor validation, defensive copy, queries outside range, MinLimit, FromSamples merging/overlapping.
+            check(SpeedLimitProfile.Unlimited.Count == 1
+                  && double.IsPositiveInfinity(SpeedLimitProfile.Unlimited.LimitAt(-10))
+                  && double.IsPositiveInfinity(SpeedLimitProfile.Unlimited.LimitAt(5000))
+                  && double.IsPositiveInfinity(SpeedLimitProfile.Unlimited.MinLimit(0, 5000)),
+                "SpeedLimitProfile: Unlimited is positive infinity everywhere");
+
+            check(Throws<ArgumentException>(() => new SpeedLimitProfile(null, new[] { 10.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new double[0], new double[0]))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0, 100.0 }, new[] { 10.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 10.0 }, new[] { 10.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0, 100.0, 100.0 }, new[] { 10.0, 20.0, 30.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0, 100.0, 50.0 }, new[] { 10.0, 20.0, 30.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0 }, new[] { 0.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0 }, new[] { -5.0 }))
+                  && Throws<ArgumentException>(() => new SpeedLimitProfile(new[] { 0.0 }, new[] { double.NaN })),
+                "SpeedLimitProfile: constructor rejects invalid offsets and non-positive speeds");
+
+            var srcOffs = new[] { 0.0, 200.0, 500.0 };
+            var srcSpds = new[] { 30.0, 15.0, 25.0 };
+            var prof = new SpeedLimitProfile(srcOffs, srcSpds);
+            srcOffs[1] = 999.0;
+            srcSpds[1] = 999.0;
+            check(prof.Count == 3 && Near(prof.OffsetAt(1), 200, 1e-9) && Near(prof.SpeedAt(1), 15, 1e-9),
+                "SpeedLimitProfile: constructor copies input arrays defensively");
+
+            check(Near(prof.LimitAt(-100), 30, 1e-9) && Near(prof.LimitAt(0), 30, 1e-9)
+                  && Near(prof.LimitAt(199.9), 30, 1e-9) && Near(prof.LimitAt(200), 15, 1e-9)
+                  && Near(prof.LimitAt(499.9), 15, 1e-9) && Near(prof.LimitAt(500), 25, 1e-9)
+                  && Near(prof.LimitAt(99999), 25, 1e-9),
+                "SpeedLimitProfile: LimitAt handles boundaries and queries outside range");
+
+            check(Near(prof.MinLimit(0, 150), 30, 1e-9)
+                  && Near(prof.MinLimit(0, 200), 30, 1e-9)
+                  && Near(prof.MinLimit(0, 201), 15, 1e-9)
+                  && Near(prof.MinLimit(600, 100), 15, 1e-9)
+                  && Near(prof.MinLimit(100, 600), 15, 1e-9)
+                  && Near(prof.MinLimit(-50, 50), 30, 1e-9)
+                  && Near(prof.MinLimit(600, 1200), 25, 1e-9),
+                "SpeedLimitProfile: MinLimit spans zones in either order and outside range");
+
+            var emptySamples = SpeedLimitProfile.FromSamples(Array.Empty<double>(), Array.Empty<double>());
+            check(emptySamples == SpeedLimitProfile.Unlimited, "SpeedLimitProfile.FromSamples: empty input returns Unlimited");
+
+            // Quantum merging + overlapping/non-increasing offsets taking the lower limit + infinite values.
+            var merged = SpeedLimitProfile.FromSamples(
+                new[] { 0.0, 50.0, 100.0, 100.0, 80.0, 200.0, 300.0, 400.0 },
+                new[] { 30.0, 29.4, 20.0, 14.0, 12.0, 12.5, double.PositiveInfinity, double.PositiveInfinity },
+                quantum: 1.0);
+            check(merged.Count == 3
+                  && Near(merged.OffsetAt(0), 0, 1e-9) && Near(merged.SpeedAt(0), 29.4, 1e-9)
+                  && Near(merged.OffsetAt(1), 100, 1e-9) && Near(merged.SpeedAt(1), 12.0, 1e-9)
+                  && Near(merged.OffsetAt(2), 300, 1e-9) && double.IsPositiveInfinity(merged.SpeedAt(2)),
+                "SpeedLimitProfile.FromSamples: merges within quantum, folds overlapping offsets to lowest limit, and handles infinity",
+                string.Join(", ", Enumerable.Range(0, merged.Count).Select(i => $"{merged.OffsetAt(i):F0}:{merged.SpeedAt(i):F1}")));
         }
 
         // main (1000 m, level) -> switch -> through (1000 m, climbing 2%) -> joined end to end -> last (1000 m)
@@ -166,8 +326,14 @@ namespace CommsTablet.Check
 
         private static Route Wait(RouteSearch search)
         {
-            for (var waited = 0; !search.Done && waited < 5000; waited += 5)
+            var elapsed = Stopwatch.StartNew();
+            while (!search.Done && elapsed.ElapsedMilliseconds < 30000)
                 Thread.Sleep(5);
+            if (!search.Done)
+            {
+                check(false, "Track Ahead: route search timed out after 30 s", $"failure={search.Failure}");
+                return null;
+            }
             return search.Route;
         }
 
@@ -260,7 +426,382 @@ namespace CommsTablet.Check
                 Goal = new TrackPosition(away, 250),
                 Blocked = (t, x, y) => false,
             });
-            check(Wait(none) == null && none.Done && none.Failure == RouteFailure.NoPath, "Track Ahead: with no way there, the search says so");
+            check(Wait(none) == null && none.Done && none.Error == null && none.Failure == RouteFailure.NoPath,
+                $"Track Ahead: with no way there, the search says so (failure={none.Failure}, error={none.Error?.GetType().Name})");
+        }
+
+        private static void CorrectnessChecks()
+        {
+            // 1. Stable siding arrival point: stop must not jump to midpoint after the train's nose enters the siding.
+            {
+                var b = new TrackGraphBuilder();
+                int approach = Add(b, 500), siding = Add(b, 400);
+                b.Join(approach, TrackEnd.End, siding, TrackEnd.Start);
+                var g = b.Build();
+                var route = new Router(g).Find(new RouteRequest
+                {
+                    EndA = new TrackPosition(approach, 200),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(approach, 120),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 80,
+                    Goal = new TrackPosition(siding, 200),
+                });
+                check(route != null, "Arrival: route into siding found");
+                if (route != null)
+                {
+                    // Before entering siding: 300 m on approach + 85 m into siding = 385 m ahead of nose.
+                    var before = AheadPath.Routed(g, new TrackPosition(approach, 120), TrackDirection.Forward, 80, route, 0, 85, _ => 0);
+                    // 1 m into siding (along = 301): stop must remain at offset 85, not jump to 200.
+                    var entered = AheadPath.Routed(g, new TrackPosition(approach, 421), TrackDirection.Forward, 80, route, 301, 85, _ => 0);
+                    // Past arrival stop (along = 390, offset 90): remaining route distance is 0, no backward leg.
+                    var past = AheadPath.Routed(g, new TrackPosition(siding, 10), TrackDirection.Forward, 80, route, 390, 85, _ => 0);
+                    check(Near(before.Legs.Last().To, 85, 0.01) && Near(entered.Legs.Last().To, 85, 0.01)
+                          && Near(entered.WholeLength - entered.RouteStart, 84, 0.01),
+                        "Arrival: siding stop stays fixed after nose enters siding",
+                        $"before={before.Legs.Last().To:F1}, entered={entered.Legs.Last().To:F1}, rem={entered.WholeLength - entered.RouteStart:F1}");
+                    check(Near(past.Length - past.RouteStart, 0, 0.01),
+                        "Arrival: past the computed stop, remaining distance is zero with no backward leg",
+                        $"rem={past.Length - past.RouteStart:F1}");
+                }
+
+                // Entering siding from TrackEnd.End (backward into siding).
+                var bRev = new TrackGraphBuilder();
+                int appRev = Add(bRev, 500), sidRev = Add(bRev, 400);
+                bRev.Join(appRev, TrackEnd.End, sidRev, TrackEnd.End);
+                var gRev = bRev.Build();
+                var routeRev = new Router(gRev).Find(new RouteRequest
+                {
+                    EndA = new TrackPosition(appRev, 200),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(appRev, 120),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 80,
+                    Goal = new TrackPosition(sidRev, 200),
+                });
+                check(routeRev != null, "Arrival: reversed siding route found");
+                if (routeRev != null)
+                {
+                    var beforeRev = AheadPath.Routed(gRev, new TrackPosition(appRev, 120), TrackDirection.Forward, 80, routeRev, 0, 85, _ => 0);
+                    var enteredRev = AheadPath.Routed(gRev, new TrackPosition(appRev, 421), TrackDirection.Forward, 80, routeRev, 301, 85, _ => 0);
+                    check(Near(beforeRev.Legs.Last().To, 315, 0.01) && Near(enteredRev.Legs.Last().To, 315, 0.01)
+                          && Near(enteredRev.WholeLength - enteredRev.RouteStart, 84, 0.01),
+                        "Arrival: siding entered from End keeps its stop fixed after entry",
+                        $"before={beforeRev.Legs.Last().To:F1}, entered={enteredRev.Legs.Last().To:F1}");
+                }
+
+                // Long train (250 m + 5 m margin = 255 m on 400 m siding): GoalIntoTrack keeps route valid past midpoint 200 m.
+                var longRoute = new Router(g).Find(new RouteRequest
+                {
+                    EndA = new TrackPosition(approach, 300),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(approach, 50),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 250,
+                    Goal = new TrackPosition(siding, 200),
+                    GoalIntoTrack = 255,
+                });
+                check(longRoute != null && Near(longRoute.Legs[0].Pieces.Last().To, 255, 0.01)
+                      && longRoute.Legs[0].TryLocate(new TrackPosition(siding, 220), 0, 5, out _, out _),
+                    "Arrival: long train past siding midpoint stays located on the route up to its siding stop");
+
+                // Siding far-end clearance cap (10 m): 120 m train on 100 m siding stops at 90 m, leaving a car at 94 m clear.
+                var bShortSid = new TrackGraphBuilder();
+                int appCap = Add(bShortSid, 300), sidCap = Add(bShortSid, 100);
+                bShortSid.Join(appCap, TrackEnd.End, sidCap, TrackEnd.Start);
+                var gCap = bShortSid.Build();
+                var capSearch = new RouteSearch(gCap, new RouteRequest
+                {
+                    EndA = new TrackPosition(appCap, 200),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(appCap, 80),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 120,
+                    Goal = new TrackPosition(sidCap, 50),
+                    GoalIntoTrack = 125,
+                    Blocked = (t, x, y) => t == sidCap && Math.Min(x, y) <= 98 && Math.Max(x, y) >= 94,
+                });
+                var capRoute = Wait(capSearch);
+                check(capRoute != null && Near(capRoute.Legs[0].Pieces.Last().To, 90, 0.01) && !capSearch.ThroughCars,
+                    "Arrival: siding stop caps 10 m short of the far end and checks occupancy only up to that cap");
+
+                // Direct start right at siding entrance (offset 0) uses GoalIntoTrack for stop and occupancy.
+                var directSearch = new RouteSearch(g, new RouteRequest
+                {
+                    EndA = new TrackPosition(siding, 0),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(approach, 250),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 250,
+                    Goal = new TrackPosition(siding, 200),
+                    GoalIntoTrack = 255,
+                    Blocked = (t, x, y) => t == siding && Math.Min(x, y) <= 235 && Math.Max(x, y) >= 225,
+                });
+                var directRoute = Wait(directSearch);
+                check(directRoute != null && Near(directRoute.Legs[0].Pieces.Last().To, 255, 0.01) && directSearch.ThroughCars,
+                    "Arrival: direct start at siding entrance routes to the siding stop and checks occupancy up to it");
+            }
+
+            // 2. Occupied-destination standing-car warning: siding stop reach and exact GoalCarSpan exemption.
+            {
+                var b = new TrackGraphBuilder();
+                int main = Add(b, 500), siding = Add(b, 400);
+                b.Join(main, TrackEnd.End, siding, TrackEnd.Start);
+                var g = b.Build();
+
+                bool CarOverlap(double a, double c, double lo, double hi)
+                {
+                    var low = Math.Min(a, c);
+                    var high = Math.Max(a, c);
+                    return lo <= high && hi >= low;
+                }
+
+                RouteRequest MakeReq(Func<int, double, double, bool> blocked, (double, double)? goalSpan = null, double? goalInto = null, double trainLength = 100) => new RouteRequest
+                {
+                    EndA = new TrackPosition(main, 300),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(main, 300 - trainLength),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = trainLength,
+                    Goal = new TrackPosition(siding, 200),
+                    GoalIntoTrack = goalInto,
+                    Blocked = blocked,
+                    GoalCarSpan = goalSpan,
+                };
+
+                // Goal car [190, 210] AND earlier car [50, 70]: default (no span) triggers ThroughCars.
+                var bothDefault = new RouteSearch(g, MakeReq((t, x, y) => t == siding && (CarOverlap(x, y, 50, 70) || CarOverlap(x, y, 190, 210))));
+                check(Wait(bothDefault) != null && bothDefault.ThroughCars,
+                    "Occupancy: standing cars at and before goal trigger ThroughCars by default");
+
+                // Goal car [190, 210] ONLY: default triggers ThroughCars for an exact-offset goal.
+                var goalOnlyDefault = new RouteSearch(g, MakeReq((t, x, y) => t == siding && CarOverlap(x, y, 190, 210)));
+                check(Wait(goalOnlyDefault) != null && goalOnlyDefault.ThroughCars,
+                    "Occupancy: a car covering an exact goal triggers ThroughCars unless exempted by GoalCarSpan");
+
+                // Production-style siding goal (100 m train -> stop at 105 m) with cars at [180, 400]: stop is clear -> no ThroughCars!
+                var sidingClearBeforeCars = new RouteSearch(g, MakeReq((t, x, y) => t == siding && CarOverlap(x, y, 180, 400), goalInto: 105, trainLength: 100));
+                check(Wait(sidingClearBeforeCars) != null && !sidingClearBeforeCars.ThroughCars,
+                    "Occupancy: partly occupied siding beyond the train's arrival stop does not falsely warn ThroughCars");
+
+                // Long train (250 m -> stop at 255 m) with car at [230, 240] (past midpoint 200, before stop 255): MUST warn ThroughCars!
+                var sidingCarBeforeLongStop = new RouteSearch(g, MakeReq((t, x, y) => t == siding && CarOverlap(x, y, 230, 240), goalInto: 255, trainLength: 250));
+                check(Wait(sidingCarBeforeLongStop) != null && sidingCarBeforeLongStop.ThroughCars,
+                    "Occupancy: car past siding midpoint but before long train's arrival stop triggers ThroughCars");
+
+                // GoalCarSpan still blocks on an earlier car [50, 70] AND on a touching car [170, 190] against [190, 210].
+                var bothSpan = new RouteSearch(g, MakeReq((t, x, y) => t == siding && (CarOverlap(x, y, 50, 70) || CarOverlap(x, y, 190, 210)), goalSpan: (190, 210)));
+                check(Wait(bothSpan) != null && bothSpan.ThroughCars,
+                    "Occupancy: GoalCarSpan still checks intervening track up to the goal car's near edge");
+
+                var touchingSpan = new RouteSearch(g, MakeReq((t, x, y) => t == siding && (CarOverlap(x, y, 170, 190) || CarOverlap(x, y, 190, 210)), goalSpan: (190, 210)));
+                check(Wait(touchingSpan) != null && touchingSpan.ThroughCars,
+                    "Occupancy: GoalCarSpan does not exempt a second touching car before the target car");
+
+                // GoalCarSpan with clear approach succeeds without ThroughCars.
+                var clearSpan = new RouteSearch(g, MakeReq((t, x, y) => t == siding && CarOverlap(x, y, 190, 210), goalSpan: (190, 210)));
+                check(Wait(clearSpan) != null && !clearSpan.ThroughCars,
+                    "Occupancy: GoalCarSpan succeeds without ThroughCars when approach up to goal car is clear");
+            }
+
+            // 3. Full physical car occupancy & coupler overhang across joints.
+            {
+                var b = new TrackGraphBuilder();
+                int t0 = Add(b, 50), mid = Add(b, 8), t2 = Add(b, 50), t3 = Add(b, 50);
+                b.Join(t0, TrackEnd.End, mid, TrackEnd.Start);
+                b.Join(mid, TrackEnd.End, t2, TrackEnd.Start);
+                // Reversed joint between t2.End and t3.End.
+                b.Join(t2, TrackEnd.End, t3, TrackEnd.End);
+                var g = b.Build();
+
+                // Car straddling t0 -> mid -> t2: mid must be marked occupied.
+                var spans = new List<(int Track, double From, double To)>();
+                TrainSpans.SpansOnGraph(g, t2, 3, TrackDirection.Forward, 3, t0, 47, TrackDirection.Forward, 3, 25, _ => 0, spans);
+                check(spans.Any(s => s.Track == mid && Near(Math.Min(s.From, s.To), 0, 0.01) && Near(Math.Max(s.From, s.To), 8, 0.01)),
+                    "TrainSpans: short intermediate track wholly between bogies is marked occupied",
+                    string.Join(", ", spans.Select(s => $"{s.Track}:{s.From:F1}-{s.To:F1}")));
+
+                // Front overhang crossing reversed joint t2.End -> t3.End carries onto t3 with flipped outward direction.
+                spans.Clear();
+                TrainSpans.SpansOnGraph(g, t2, 48, TrackDirection.Forward, 4, t2, 36, TrackDirection.Forward, 3, 25, _ => 0, spans);
+                check(spans.Any(s => s.Track == t3 && Near(s.From, 50, 0.01) && Near(s.To, 48, 0.01)),
+                    "TrainSpans: coupler overhang carries across connected joints onto adjoining tracks",
+                    string.Join(", ", spans.Select(s => $"{s.Track}:{s.From:F1}-{s.To:F1}")));
+
+                TrainSpans.AdvanceOverhang(g, t2, 48, TrackDirection.Forward, 4, _ => 0, out var couplerAt, out var outward, null);
+                check(couplerAt.Track == t3 && Near(couplerAt.Offset, 48, 0.01) && outward == TrackDirection.Backward,
+                    "TrainSpans: CouplerEnd advances across reversed joint with updated track and outward direction",
+                    $"{couplerAt} {outward}");
+
+                // Dead end clamps cleanly.
+                TrainSpans.AdvanceOverhang(g, t0, 2, TrackDirection.Backward, 5, _ => 0, out var deadAt, out var deadOut, null);
+                check(deadAt.Track == t0 && Near(deadAt.Offset, 0, 0.01) && deadOut == TrackDirection.Backward,
+                    "TrainSpans: overhang clamps at dead ends", $"{deadAt} {deadOut}");
+
+                // Diamond bridge: long branch (15 m) reaches merge (2 m) within 20 m budget (17 m) but fails on downstream tail (4 m -> 21 m);
+                // short branch (5 m) must re-admit merge at 7 m and reach tail at 11 m <= 20 m.
+                var bd = new TrackGraphBuilder();
+                int rTrack = Add(bd, 30), bLong = Add(bd, 15), bShort = Add(bd, 5), merge = Add(bd, 2), tail = Add(bd, 4), fTrack = Add(bd, 30);
+                bd.AddJunction(rTrack, TrackEnd.End, new[] { (bLong, TrackEnd.Start), (bShort, TrackEnd.Start) }, new MapPoint(30, 0));
+                bd.AddJunction(merge, TrackEnd.Start, new[] { (bLong, TrackEnd.End), (bShort, TrackEnd.End) }, new MapPoint(50, 0));
+                bd.Join(merge, TrackEnd.End, tail, TrackEnd.Start);
+                bd.Join(tail, TrackEnd.End, fTrack, TrackEnd.Start);
+                var gd = bd.Build();
+                spans.Clear();
+                // selectedBranch returns 0 (bLong first), wheelbase 14 m -> maxBridgeLength = 20 m.
+                TrainSpans.SpansOnGraph(gd, fTrack, 2, TrackDirection.Forward, 2, rTrack, 28, TrackDirection.Forward, 2, 14, _ => 0, spans);
+                check(spans.Any(s => s.Track == bShort) && spans.Any(s => s.Track == merge) && spans.Any(s => s.Track == tail),
+                    "TrainSpans: bogie bridge re-admits shared merge via shorter branch to reach downstream track within budget",
+                    string.Join(", ", spans.Select(s => $"{s.Track}:{s.From:F1}-{s.To:F1}")));
+            }
+
+            // 4. Iterative cycle-safe booklet walk & overflow-safe track parsing.
+            {
+                check(!YardTrackName.TryParse("[Y]_[SM]_[A-999999999999999-S]", out _),
+                    "Booklet: YardTrackName.TryParse rejects oversized track numbers without throwing");
+                check(YardTrackName.TryParse("[Y]_[SM]_[A-04-S]", out var okName) && okName.Number == 4 && okName.Kind == "S",
+                    "Booklet: YardTrackName.TryParse still parses valid track names");
+
+                // Off-page loop on branch 0 of an off-page switch, valid on-page target on branch 1.
+                var lb = new TrackGraphBuilder();
+                int stem0 = Add(lb, 100), b0 = Add(lb, 1), b1 = Add(lb, 100), targetStem = Add(lb, 100), targetA = Add(lb, 100), targetB = Add(lb, 100);
+                int jStart = lb.AddJunction(stem0, TrackEnd.End, new[] { (b0, TrackEnd.Start), (targetB, TrackEnd.Start) }, new MapPoint(0, 0));
+                int loopIn = Add(lb, 2), loopBack = Add(lb, 2);
+                int jLoop = lb.AddJunction(loopIn, TrackEnd.End, new[] { (loopBack, TrackEnd.Start), (b1, TrackEnd.Start) }, new MapPoint(10, 0));
+                int jMerge = lb.AddJunction(loopIn, TrackEnd.Start, new[] { (b0, TrackEnd.End), (loopBack, TrackEnd.End) }, new MapPoint(5, 0));
+                int jEnd = lb.AddJunction(targetStem, TrackEnd.Start, new[] { (b1, TrackEnd.End), (targetA, TrackEnd.Start) }, new MapPoint(200, 0));
+                var loopGraph = lb.Build();
+                var walkerType = typeof(Booklet).GetNestedType("Walker", BindingFlags.NonPublic);
+                var goalType = typeof(Booklet).GetNestedType("Goal", BindingFlags.NonPublic);
+                var walker = Activator.CreateInstance(walkerType);
+                walkerType.GetField("Graph").SetValue(walker, loopGraph);
+                walkerType.GetField("OnPage").SetValue(walker, new HashSet<int> { jStart, jEnd });
+                walkerType.GetField("Goal").SetValue(walker, Enum.Parse(goalType, "Switch"));
+                walkerType.GetField("Junction").SetValue(walker, jEnd);
+                walkerType.GetField("Side").SetValue(walker, -2); // AnySide
+                var walked = (bool)walkerType.GetMethod("Walk").Invoke(walker, new object[] { b0, TrackEnd.Start, 0.0 });
+                var steps = (int)walkerType.GetField("Steps").GetValue(walker);
+                check(walked && steps < 50 && jLoop >= 0 && jMerge >= 0,
+                    "Booklet: iterative Walker skips short-track loops and finds valid exit without burning budget",
+                    $"walked={walked}, steps={steps}");
+
+                // Deep linear chain (5,000 tracks) completes iteratively without blowing the stack.
+                var deepB = new TrackGraphBuilder();
+                const int deepLen = 5000;
+                int deepPrev = Add(deepB, 2);
+                for (var i = 1; i < deepLen; i++)
+                {
+                    var next = Add(deepB, 2);
+                    deepB.Join(deepPrev, TrackEnd.End, next, TrackEnd.Start);
+                    deepPrev = next;
+                }
+                var deepWalker = Activator.CreateInstance(walkerType);
+                walkerType.GetField("Graph").SetValue(deepWalker, deepB.Build());
+                walkerType.GetField("OnPage").SetValue(deepWalker, new HashSet<int>());
+                walkerType.GetField("Goal").SetValue(deepWalker, Enum.Parse(goalType, "DeadEnd"));
+                var deepOk = (bool)walkerType.GetMethod("Walk").Invoke(deepWalker, new object[] { 0, TrackEnd.Start, 0.0 });
+                var deepPath = (List<(int Track, TrackEnd Entered)>)walkerType.GetField("Path").GetValue(deepWalker);
+                check(deepOk && deepPath.Count == deepLen,
+                    "Booklet: iterative Walker handles deep chains without stack overflow",
+                    $"ok={deepOk}, count={deepPath.Count}");
+
+                // Oversized numeric badge in Booklet.Build skips cleanly without OverflowException.
+                var badgeGraphB = new TrackGraphBuilder();
+                Add(badgeGraphB, 100);
+                var badgeTiles = new[]
+                {
+                    new SchematicTile("SM-TracksEnd", 0, 0, 180, 50, 50),
+                    new SchematicTile("SM-TracksStraight", 0, 100, 0, 50, 50),
+                    new SchematicTile("SM-TracksEnd", 0, 200, 0, 50, 50),
+                };
+                var badgeList = new[]
+                {
+                    new SchematicBadge(0, 50, "4", "S", "#ffffff"),
+                    new SchematicBadge(0, 150, "999999999999999999", "S", "#ffffff"),
+                };
+                var badgeSrc = new SchematicSource("[SM-B]", "SM", "Steel Mill", "B", "YARD", "#ffffff", false, badgeTiles, badgeList, Array.Empty<SchematicSwitch>());
+                var builtBooklet = Booklet.Build(new[] { badgeSrc }, badgeGraphB.Build(), _ => "[Y]_[SM]_[B-04-S]");
+                check(builtBooklet.Stats.Matched == 1 && builtBooklet.Stats.BadgesChecked == 1 && builtBooklet.Stats.BadgesAgree == 1,
+                    "Booklet: oversized numeric badge skips cleanly instead of throwing OverflowException",
+                    builtBooklet.Stats.ToString());
+            }
+
+            // 5. Cooperative cancellation for Router and RouteSearch.
+            {
+                var b = new TrackGraphBuilder();
+                const int chain = 200;
+                int prev = Add(b, 50);
+                for (var i = 1; i < chain; i++)
+                {
+                    var next = Add(b, 50);
+                    b.Join(prev, TrackEnd.End, next, TrackEnd.Start);
+                    prev = next;
+                }
+                var g = b.Build();
+
+                // Already-cancelled token returns Cancelled immediately.
+                var pre = new CancellationTokenSource();
+                pre.Cancel();
+                var rPre = new Router(g).Find(new RouteRequest
+                {
+                    EndA = new TrackPosition(0, 30),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(0, 10),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 20,
+                    Goal = new TrackPosition(chain - 1, 25),
+                }, out var failPre, pre.Token);
+                check(rPre == null && failPre == RouteFailure.Cancelled,
+                    "Cancellation: pre-cancelled token aborts Router.Find immediately");
+
+                // Mid-search cancellation stops expansion promptly.
+                var midCts = new CancellationTokenSource();
+                var penaltiesCalled = 0;
+                var rMid = new Router(g).Find(new RouteRequest
+                {
+                    EndA = new TrackPosition(0, 30),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(0, 10),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 20,
+                    Goal = new TrackPosition(chain - 1, 25),
+                    TrackPenalty = _ =>
+                    {
+                        if (++penaltiesCalled >= 5)
+                            midCts.Cancel();
+                        return 0;
+                    },
+                }, out var failMid, midCts.Token);
+                check(rMid == null && failMid == RouteFailure.Cancelled && penaltiesCalled < 20,
+                    "Cancellation: Router.Find stops promptly when cancelled mid-search",
+                    $"fail={failMid}, calls={penaltiesCalled}");
+
+                // RouteSearch.Cancel prevents the fallback pass from running.
+                var entered = new ManualResetEventSlim(false);
+                var release = new ManualResetEventSlim(false);
+                var rs = new RouteSearch(g, new RouteRequest
+                {
+                    EndA = new TrackPosition(0, 30),
+                    OutwardA = TrackDirection.Forward,
+                    EndB = new TrackPosition(0, 10),
+                    OutwardB = TrackDirection.Backward,
+                    TrainLength = 20,
+                    Goal = new TrackPosition(chain - 1, 25),
+                    Blocked = (_, __, ___) =>
+                    {
+                        entered.Set();
+                        release.Wait(2000);
+                        return true;
+                    },
+                });
+                entered.Wait(2000);
+                rs.Cancel();
+                release.Set();
+                var cancelledRoute = Wait(rs);
+                check(rs.Done && rs.Cancelled && cancelledRoute == null && rs.Failure == RouteFailure.Cancelled && !rs.ThroughCars,
+                    "Cancellation: RouteSearch.Cancel stops search cleanly without running fallback pass",
+                    $"done={rs.Done}, cancelled={rs.Cancelled}, fail={rs.Failure}, through={rs.ThroughCars}");
+            }
         }
 
         // ---- The sign rules, on curves whose answers are known ------------------

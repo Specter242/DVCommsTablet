@@ -96,6 +96,8 @@ namespace CommsTablet.Books
             public Dictionary<string, Junction> Junctions => Found.Junctions;
         }
 
+        private static readonly string[] ContainerNames = { "Tracks", "Switches", "Stations" };
+
         private static Plan plan;
 
         /// <summary>Whether this world's route map is re-laid, decided once per world (registry).</summary>
@@ -106,6 +108,8 @@ namespace CommsTablet.Books
                 return null;
             if (plan != null && plan.Registry == registry)
                 return plan;
+            if (SingletonBehaviour<LevelInfo>.Instance?.junctionData == null)
+                return null;
             plan = new Plan { Registry = registry };
             try
             {
@@ -130,16 +134,83 @@ namespace CommsTablet.Books
                 return "no stock route map data";
             // The stock data must be the drawing's.
             var cells = data.junctionPageDataWorld[0].junctionDataCoords;
-            if (cells.Count != Spec.stockCells.Count)
-                return $"the stock route map has {cells.Count} switches, the drawing {Spec.stockCells.Count}";
+            if (cells == null || cells.Count != Spec.stockCells.Count)
+                return $"the stock route map has {cells?.Count ?? 0} switches, the drawing {Spec.stockCells.Count}";
             foreach (var c in cells)
                 if (!Spec.stockCells.TryGetValue(c.data.junctionIdLong ?? "", out var at) || at[0] != c.coord.x || at[1] != c.coord.y)
                     return $"stock switch {c.data.junctionIdLong} at ({c.coord.x}, {c.coord.y}) is not where the drawing has it";
+            // Preflight the stock route map prefab's containers and tile prototypes before modifying touch cells.
+            var stockPage = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.RouteMapRender)?.GetComponent<StaticPagesRender>()?.staticPages.FirstOrDefault();
+            if (!TryGetContainers(stockPage, out var stockContainers, out var containerProblem))
+                return containerProblem;
+            var prototypes = CollectPrototypes(stockContainers, null);
+            var missingSprites = MissingSprites(prototypes);
+            if (missingSprites.Count > 0)
+                return $"route map prefab is missing required tile sprites: {string.Join(", ", missingSprites)}";
             // Double Track's switches: all of them, and each the drawing shows found by id and place.
             var expected = Spec.doubleTrack.Count + (Spec.bookletOnly?.Count ?? 0);
             return p.Found.Find(p.Registry, expected,
                 Spec.doubleTrack.Select(kv => new KeyValuePair<string, (string, float[])>(kv.Key, (kv.Value.id, kv.Value.pos))));
         }
+
+        private static bool TryGetContainers(StaticPageTemplatePaper page, out Dictionary<string, Transform> containers, out string problem)
+        {
+            containers = null;
+            problem = null;
+            if (page == null)
+            {
+                problem = "no route map page";
+                return false;
+            }
+            var wrapper = page.transform.Find(DoubleTrackBooks.WrapperPath);
+            if (wrapper == null)
+            {
+                problem = $"route map page has no {DoubleTrackBooks.WrapperPath}";
+                return false;
+            }
+            containers = new Dictionary<string, Transform>(ContainerNames.Length);
+            foreach (var n in ContainerNames)
+            {
+                var child = wrapper.Find(n);
+                if (child == null)
+                {
+                    problem = $"route map page has no {n} container";
+                    containers = null;
+                    return false;
+                }
+                containers[n] = child;
+            }
+            return true;
+        }
+
+        private static Dictionary<string, GameObject> CollectPrototypes(Dictionary<string, Transform> containers, HashSet<string> stockNames, Dictionary<string, Transform> fallbackContainers = null)
+        {
+            var prototypes = new Dictionary<string, GameObject>();
+            foreach (var n in new[] { "Tracks", "Switches" })
+                foreach (Transform t in containers[n])
+                {
+                    var s = SpriteOf(t);
+                    if (s != null && !prototypes.ContainsKey(s) && (stockNames == null || stockNames.Contains($"{n}/{t.name}")))
+                        prototypes[s] = t.gameObject;
+                }
+            if (fallbackContainers != null)
+                foreach (var n in new[] { "Tracks", "Switches" })
+                    foreach (Transform t in fallbackContainers[n])
+                    {
+                        var s = SpriteOf(t);
+                        if (s != null && !prototypes.ContainsKey(s))
+                            prototypes[s] = t.gameObject;
+                    }
+            var booklet = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.SchematicMapRender)?.GetComponent<StaticPagesRender>();
+            if (booklet != null)
+                foreach (var img in booklet.staticPages.SelectMany(sp => sp.GetComponentsInChildren<Image>(true)))
+                    if (img.sprite != null && !prototypes.ContainsKey(img.sprite.name) && img.sprite.name.StartsWith("SM-Tracks", StringComparison.Ordinal))
+                        prototypes[img.sprite.name] = img.gameObject;
+            return prototypes;
+        }
+
+        private static List<string> MissingSprites(Dictionary<string, GameObject> prototypes) =>
+            Spec.tiles.Select(t => t.sprite).Distinct().Where(s => string.IsNullOrEmpty(s) || !prototypes.ContainsKey(s)).ToList();
 
         private static bool Relaid
         {
@@ -163,7 +234,7 @@ namespace CommsTablet.Books
                 return pages;
             var page = pages[0];
             var coords = new List<JunctionGeneratedDataRuntime.DataCoord>();
-            foreach (var c in page.junctionDataCoords)
+            foreach (var c in page.junctionDataCoords ?? new List<JunctionGeneratedDataRuntime.DataCoord>())
             {
                 var id = c.data.junctionIdLong ?? "";
                 var moved = c;
@@ -249,8 +320,8 @@ namespace CommsTablet.Books
                 {
                     if (!__instance.gameObject.name.StartsWith("RouteMapStaticRender", StringComparison.Ordinal) || __instance.GetComponent<Drawn>() != null || !Relaid)
                         return;
-                    Relay(__instance);
-                    __instance.gameObject.AddComponent<Drawn>();
+                    if (Relay(__instance))
+                        __instance.gameObject.AddComponent<Drawn>();
                 }
                 catch (Exception e)
                 {
@@ -273,37 +344,32 @@ namespace CommsTablet.Books
             return text.Replace("\\n", "").Replace("\n", "").Trim();
         }
 
-        private static void Relay(StaticPagesRender render)
+        private static bool Relay(StaticPagesRender render)
         {
             var page = render.staticPages.FirstOrDefault();
             var stockPage = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.RouteMapRender)?.GetComponent<StaticPagesRender>()?.staticPages.FirstOrDefault();
-            if (page == null || stockPage == null)
+            if (!TryGetContainers(page, out var containers, out var pageProblem))
             {
-                DoubleTrackBooks.Warn("route map page: no page to draw on");
-                return;
+                DoubleTrackBooks.Warn($"route map page: {pageProblem}");
+                return false;
             }
-            var wrapper = page.transform.Find(DoubleTrackBooks.WrapperPath);
-            var stockWrapper = stockPage.transform.Find(DoubleTrackBooks.WrapperPath);
-            var names = new[] { "Tracks", "Switches", "Stations" };
-            var containers = names.ToDictionary(n => n, n => wrapper.Find(n));
-            var stockNames = new HashSet<string>(names.SelectMany(n => stockWrapper.Find(n).Cast<Transform>().Select(t => $"{n}/{t.name}")));
+            if (!TryGetContainers(stockPage, out var stockContainers, out var stockProblem))
+            {
+                DoubleTrackBooks.Warn($"route map page: {stockProblem}");
+                return false;
+            }
+            var stockNames = new HashSet<string>(ContainerNames.SelectMany(n => stockContainers[n].Cast<Transform>().Select(t => $"{n}/{t.name}")));
             var k = Spec.Cell / 50f;
             Vector2 Centre(int x, int y) => new Vector2(-800f + Spec.Cell * (x + 0.5f), -800f + Spec.Cell * (y + 0.5f));
 
-            // Prototypes of each tile, from the stock page (and the booklet's, for the end tile).
-            var prototypes = new Dictionary<string, GameObject>();
-            foreach (var n in new[] { "Tracks", "Switches" })
-                foreach (Transform t in containers[n])
-                {
-                    var s = SpriteOf(t);
-                    if (s != null && !prototypes.ContainsKey(s) && stockNames.Contains($"{n}/{t.name}"))
-                        prototypes[s] = t.gameObject;
-                }
-            var booklet = LevelInfo.GetWorldSpecificPrefab(LevelInfo.WorldSpecificPrefabs.SchematicMapRender)?.GetComponent<StaticPagesRender>();
-            if (booklet != null)
-                foreach (var img in booklet.staticPages.SelectMany(sp => sp.GetComponentsInChildren<Image>(true)))
-                    if (img.sprite != null && !prototypes.ContainsKey(img.sprite.name) && img.sprite.name.StartsWith("SM-Tracks", StringComparison.Ordinal))
-                        prototypes[img.sprite.name] = img.gameObject;
+            // Prototypes of each tile, from the live page with fallback to the validated stock prefab (and the booklet's, for the end tile).
+            var prototypes = CollectPrototypes(containers, stockNames, stockContainers);
+            var missingSprites = MissingSprites(prototypes);
+            if (missingSprites.Count > 0)
+            {
+                DoubleTrackBooks.Warn($"route map page: missing required tile sprites ({string.Join(", ", missingSprites)}); leaving page unchanged");
+                return false;
+            }
 
             // The stock tiles hidden; stock cells another mod had already emptied are left empty.
             var emptied = new HashSet<Vector2Int>();
@@ -366,6 +432,7 @@ namespace CommsTablet.Books
             }
             DoubleTrackBooks.Log($"route map page: {hidden} stock tiles hidden, {made} drawn, {badges} badges placed, {moved} other tiles moved, " +
                                  $"{skipped} left out where another mod emptied the stock cell ({string.Join(" ", emptied.Select(c => $"({c.x},{c.y})"))})");
+            return true;
         }
 
         /// <summary>Another mod's tile, moved with the stock cell it stands in (its place within the cell scaled with it).</summary>

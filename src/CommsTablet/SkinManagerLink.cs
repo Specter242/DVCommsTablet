@@ -31,6 +31,9 @@ namespace CommsTablet
         private static readonly FieldInfo RadioSkinApplied = Switcher == null ? null : AccessTools.Field(Switcher, "RadioSkinApplied");
         private static readonly MethodInfo CclSubstitute = Method(Theme, "TryGetCCLSubstitution", typeof(Material), typeof(Material).MakeByRefType());
         private static readonly PropertyInfo Settings = ModMain == null ? null : AccessTools.Property(ModMain, "Settings");
+        private static readonly FieldInfo AlwaysAllowRadioReskin = Settings == null ? null : AccessTools.Field(Settings.PropertyType, "alwaysAllowRadioReskin");
+        private static Type alwaysAllowFallbackType;
+        private static FieldInfo alwaysAllowFallbackField;
 
         // Skin Manager's PaintArea flags: Exterior 1, Interior 2, All 3.
         internal const int Exterior = 1, Interior = 2, All = 3;
@@ -52,7 +55,19 @@ namespace CommsTablet
                 try
                 {
                     var settings = Settings?.GetValue(null);
-                    var always = settings == null ? null : AccessTools.Field(settings.GetType(), "alwaysAllowRadioReskin");
+                    if (settings == null)
+                        return false;
+                    var always = AlwaysAllowRadioReskin;
+                    if (always == null)
+                    {
+                        var type = settings.GetType();
+                        if (type != alwaysAllowFallbackType)
+                        {
+                            alwaysAllowFallbackField = AccessTools.Field(type, "alwaysAllowRadioReskin");
+                            alwaysAllowFallbackType = type;
+                        }
+                        always = alwaysAllowFallbackField;
+                    }
                     return always != null && always.GetValue(settings) is bool on && on;
                 }
                 catch (Exception)

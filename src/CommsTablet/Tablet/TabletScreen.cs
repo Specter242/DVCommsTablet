@@ -32,6 +32,9 @@ namespace CommsTablet.Tablet
         private const float RefreshSeconds = 0.5f;
         private static readonly Regex Tags = new Regex("<[^>]*>");
 
+        private static readonly HashSet<TabletScreen> mapScreens = new HashSet<TabletScreen>();
+        private static readonly HashSet<TabletScreen> aheadScreens = new HashSet<TabletScreen>();
+
         private TabletRadio radio;
         /// <summary>The mounted form this screen is on, if it is not the item's.</summary>
         private GadgetBase gadget;
@@ -72,7 +75,9 @@ namespace CommsTablet.Tablet
         private Image readPanel, statusPanel;
         private RawImage readBar, readArrow;
         private Text readTitle, readContent, readAction, guide;
-        private string actionsShown = "";
+        private readonly List<string> actionsShown = new List<string>();
+        private readonly List<(DV.ThingTypes.TrainCarLivery, DV.Customization.Paint.PaintTheme, TrainCar)> sideViewRequests =
+            new List<(DV.ThingTypes.TrainCarLivery, DV.Customization.Paint.PaintTheme, TrainCar)>();
         // The layer a page that draws itself draws on, its pass's plates on a pool of buttons
         // (slots) whose colliders move to them, and the button over the open part of a map.
         private RectTransform layer;
@@ -95,8 +100,37 @@ namespace CommsTablet.Tablet
         private RawImage prevArrow, nextArrow, directionArrow;
         private Text pageCount, empty, statusTitle, statusContent, statusAction;
 
-        private string lastStatus;
+        private bool statusValid, lastReadout, lastArrow, lastLeft, wasVisible;
+        private string lastStatusTitle, lastStatusContent, lastStatusAction;
+        private CleanCache cleanTitle, cleanContent, cleanAction;
         private int seenVersion = -1;
+
+        private struct CleanCache
+        {
+            private string raw;
+            private FontStyles style;
+            private string cleaned;
+
+            internal string Get(TextMeshPro text)
+            {
+                if (text == null)
+                    return "";
+                var current = text.text ?? "";
+                var currentStyle = text.fontStyle;
+                if (cleaned != null && currentStyle == style && current == raw)
+                    return cleaned;
+                raw = current;
+                style = currentStyle;
+                cleaned = Clean(current, currentStyle);
+                return cleaned;
+            }
+
+            internal void Clear()
+            {
+                raw = null;
+                cleaned = null;
+            }
+        }
 
         /// <summary>A guest's view on this canvas: its region, the id the guest gave it, and whether it asked to be drawn.</summary>
         private sealed class GuestView
@@ -149,8 +183,11 @@ namespace CommsTablet.Tablet
 
         private void OnDisable()
         {
+            SideViews.Unpin(this);
+            UntrackSelfDrawn();
             // A stashed tablet's update never runs to put the map's page copies away.
-            Map.BookletRenderer.Hide();
+            if (!AnyActive(mapScreens))
+                Map.BookletRenderer.Hide();
             ReleaseTexture();
             ReleaseCanvas();
         }
@@ -175,8 +212,14 @@ namespace CommsTablet.Tablet
             surface.enabled = visible && texture != null;
             if (!visible || !shell.isVisible)
             {
+                wasVisible = false;
                 if (Time.unscaledTime - lastVisibleAt > 10f) ReleaseTexture();
                 return;
+            }
+            if (!wasVisible)
+            {
+                wasVisible = true;
+                refreshAt = 0f;
             }
             lastVisibleAt = Time.unscaledTime;
             SideViews.Pump();
@@ -189,6 +232,103 @@ namespace CommsTablet.Tablet
         }
 
         // ---- Content -------------------------------------------------------
+
+        private void ResetStatusCache()
+        {
+            statusValid = false;
+            lastStatusTitle = lastStatusContent = lastStatusAction = null;
+            cleanTitle.Clear();
+            cleanContent.Clear();
+            cleanAction.Clear();
+        }
+
+        private static void SetActive(Component part, bool active, ref bool changed)
+        {
+            var go = part.gameObject;
+            if (go.activeSelf == active)
+                return;
+            go.SetActive(active);
+            changed = true;
+        }
+
+        private static void SetButtonActive(GameObject button, bool active)
+        {
+            if (button.activeSelf != active)
+                button.SetActive(active);
+        }
+
+        private static void SetText(Text label, string value, ref bool changed)
+        {
+            var next = value ?? "";
+            if (label.text == next)
+                return;
+            label.text = next;
+            changed = true;
+        }
+
+        private static void SetColor(Graphic graphic, Color value, ref bool changed)
+        {
+            if (graphic.color == value)
+                return;
+            graphic.color = value;
+            changed = true;
+        }
+
+        private static void SetFontStyle(Text label, FontStyle value, ref bool changed)
+        {
+            if (label.fontStyle == value)
+                return;
+            label.fontStyle = value;
+            changed = true;
+        }
+
+        private static void SetSprite(Image image, Sprite value, ref bool changed)
+        {
+            if (image.sprite == value)
+                return;
+            image.sprite = value;
+            changed = true;
+        }
+
+        private static void SetTexture(RawImage image, Texture value, ref bool changed)
+        {
+            if (image.texture == value)
+                return;
+            image.texture = value;
+            changed = true;
+        }
+
+        private static void SetLocalScale(RectTransform rect, Vector3 value, ref bool changed)
+        {
+            if (rect.localScale == value)
+                return;
+            rect.localScale = value;
+            changed = true;
+        }
+
+        private static void Place(RectTransform rect, Rect area, ref bool changed)
+        {
+            var anchor = new Vector2(0f, 1f);
+            var pos = new Vector2(area.x, -area.y);
+            if (rect.anchorMin == anchor && rect.anchorMax == anchor && rect.pivot == anchor
+                && rect.anchoredPosition == pos && rect.sizeDelta == area.size)
+                return;
+            rect.anchorMin = rect.anchorMax = rect.pivot = anchor;
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = area.size;
+            changed = true;
+        }
+
+        private bool ActionsChanged(IReadOnlyList<string> current)
+        {
+            var count = current?.Count ?? 0;
+            if (count != actionsShown.Count)
+                return true;
+            for (var i = 0; i < count; i++)
+                if (current[i] != actionsShown[i])
+                    return true;
+            return false;
+        }
 
         private void Refresh()
         {
@@ -206,35 +346,46 @@ namespace CommsTablet.Tablet
             var drawn = page != null && page.DrawsItself;
             // A guest's app has the whole screen: none of the tablet's own parts show.
             var guest = page as GuestPage;
+            var changed = page != refreshedPage;
+            if (changed)
+                ResetStatusCache();
             if (guest == null)
                 HideGuest();
 
             // The top bar.
-            homeTitle.gameObject.SetActive(home);
-            headingPlate.gameObject.SetActive(!home && guest == null);
-            heading.gameObject.SetActive(!home && guest == null);
-            heading.text = app?.Name ?? page?.Name ?? "";
+            SetActive(homeTitle, home, ref changed);
+            SetActive(headingPlate, !home && guest == null, ref changed);
+            SetActive(heading, !home && guest == null, ref changed);
+            SetText(heading, app?.Name ?? page?.Name ?? "", ref changed);
             tabPages.Clear();
             if (app != null)
-                tabPages.AddRange(app.Shown);
+            {
+                var appPages = app.Pages;
+                for (var i = 0; i < appPages.Length; i++)
+                    if (appPages[i].Available)
+                        tabPages.Add(appPages[i]);
+            }
             var tabbed = tabPages.Count > 1;
             for (var i = 0; i < MaxTabs; i++)
             {
                 var on = tabbed && i < tabPages.Count;
-                tabPlates[i].gameObject.SetActive(on);
-                tabNames[i].gameObject.SetActive(on);
-                tabButtons[i].SetActive(on);
+                SetActive(tabPlates[i], on, ref changed);
+                SetActive(tabNames[i], on, ref changed);
+                SetButtonActive(tabButtons[i], on);
                 if (!on) continue;
                 var current = tabPages[i] == page;
-                tabPlates[i].sprite = PanelSprite(current ? TabletArt.PlateOn : TabletArt.PlateOff);
-                tabNames[i].text = tabPages[i].Tab;
-                tabNames[i].color = current ? TabletArt.Amber : TabletArt.Text;
-                tabNames[i].fontStyle = current ? FontStyle.Bold : FontStyle.Normal;
+                SetSprite(tabPlates[i], PanelSprite(current ? TabletArt.PlateOn : TabletArt.PlateOff), ref changed);
+                SetText(tabNames[i], tabPages[i].Tab, ref changed);
+                SetColor(tabNames[i], current ? TabletArt.Amber : TabletArt.Text, ref changed);
+                SetFontStyle(tabNames[i], current ? FontStyle.Bold : FontStyle.Normal, ref changed);
             }
 
             // The home screen's icons.
             apps.Clear();
-            apps.AddRange(radio.Apps.Where(a => a.Available));
+            var allApps = radio.Apps;
+            for (var i = 0; i < allApps.Count; i++)
+                if (allApps[i].Available)
+                    apps.Add(allApps[i]);
             homeScroll = Mathf.Clamp(homeScroll - homeScroll % AppsPerPage, 0, Mathf.Max(0, (apps.Count - 1) / AppsPerPage * AppsPerPage));
             for (var i = 0; i < AppsPerPage; i++)
             {
@@ -242,62 +393,79 @@ namespace CommsTablet.Tablet
                 var on = home && index < apps.Count;
                 var shown = on ? apps[index] : null;
                 var art = on ? TabletIcons.Find(shown.Art) : null;
-                appShadows[i].gameObject.SetActive(on);
-                appBadges[i].gameObject.SetActive(on);
-                appArt[i].gameObject.SetActive(art != null);
-                appGlyphs[i].gameObject.SetActive(on && art == null);
-                appNames[i].gameObject.SetActive(on);
-                appButtons[i].SetActive(on);
+                SetActive(appShadows[i], on, ref changed);
+                SetActive(appBadges[i], on, ref changed);
+                SetActive(appArt[i], art != null, ref changed);
+                SetActive(appGlyphs[i], on && art == null, ref changed);
+                SetActive(appNames[i], on, ref changed);
+                SetButtonActive(appButtons[i], on);
                 if (!on) continue;
                 if (art != null)
-                    appArt[i].sprite = art;
+                    SetSprite(appArt[i], art, ref changed);
                 else
-                    appGlyphs[i].texture = shown.Guest?.Icon ?? TabletArt.Glyph(shown.Glyph);
+                {
+                    var guestIcon = shown.Guest?.Icon;
+                    SetTexture(appGlyphs[i], guestIcon ?? TabletArt.Glyph(shown.Glyph), ref changed);
+                    // A guest may update its Icon texture in-place via Texture2D.Apply().
+                    if (guestIcon != null)
+                        changed = true;
+                }
                 // A tile that is on (the light) glows: its glyph bright, a warm halo round its badge.
                 var lit = shown.On != null && shown.On();
-                appArt[i].color = appGlyphs[i].color = lit ? Color.white : TabletArt.Amber;
-                appShadows[i].texture = lit ? TabletArt.Glow : TabletArt.Shadow;
-                appShadows[i].color = lit ? TabletArt.Amber : Color.white;
-                appNames[i].text = shown.Name;
+                var glyphColor = lit ? Color.white : TabletArt.Amber;
+                SetColor(appArt[i], glyphColor, ref changed);
+                SetColor(appGlyphs[i], glyphColor, ref changed);
+                SetTexture(appShadows[i], lit ? TabletArt.Glow : TabletArt.Shadow, ref changed);
+                SetColor(appShadows[i], lit ? TabletArt.Amber : Color.white, ref changed);
+                SetText(appNames[i], shown.Name, ref changed);
             }
 
             var readout = page != null && !drawn && page.Readout;
-            foreach (var part in new Graphic[] { readPanel, readBar, readTitle, readContent, readAction })
-                part.gameObject.SetActive(readout);
-            foreach (var part in new Graphic[] { statusTitle, statusContent, statusAction })
-                part.gameObject.SetActive(!readout && guest == null);
-            statusPanel.gameObject.SetActive(!readout && guest == null);
+            SetActive(readPanel, readout, ref changed);
+            SetActive(readBar, readout, ref changed);
+            SetActive(readTitle, readout, ref changed);
+            SetActive(readContent, readout, ref changed);
+            SetActive(readAction, readout, ref changed);
+            var showStatus = !readout && guest == null;
+            SetActive(statusTitle, showStatus, ref changed);
+            SetActive(statusContent, showStatus, ref changed);
+            SetActive(statusAction, showStatus, ref changed);
+            SetActive(statusPanel, showStatus, ref changed);
             if (guest != null)
             {
-                directionArrow.gameObject.SetActive(false);
-                readArrow.gameObject.SetActive(false);
+                SetActive(directionArrow, false, ref changed);
+                SetActive(readArrow, false, ref changed);
+                ResetStatusCache();
             }
-            guide.gameObject.SetActive(readout && page.Guide != null);
-            guide.text = readout ? page.Guide : "";
+            SetActive(guide, readout && page.Guide != null, ref changed);
+            SetText(guide, readout ? page.Guide : "", ref changed);
             var actions = drawn ? null : page?.Actions;
-            actionsShown = actions == null ? "" : string.Join("|", actions);
+            actionsShown.Clear();
+            if (actions != null)
+                for (var i = 0; i < actions.Count; i++)
+                    actionsShown.Add(actions[i]);
             for (var i = 0; i < MaxActions; i++)
             {
                 var on = actions != null && i < actions.Count;
-                actionPlates[i].gameObject.SetActive(on);
-                actionNames[i].gameObject.SetActive(on);
-                actionButtons[i].SetActive(on);
-                if (on) actionNames[i].text = actions[i];
+                SetActive(actionPlates[i], on, ref changed);
+                SetActive(actionNames[i], on, ref changed);
+                SetButtonActive(actionButtons[i], on);
+                if (on) SetText(actionNames[i], actions[i], ref changed);
             }
 
             var sections = drawn ? null : page?.Sections;
             for (var i = 0; i < MaxSections; i++)
             {
                 var on = sections != null && i < sections.Length;
-                sectionPlates[i].gameObject.SetActive(on);
-                sectionNames[i].gameObject.SetActive(on);
-                sectionButtons[i].SetActive(on);
+                SetActive(sectionPlates[i], on, ref changed);
+                SetActive(sectionNames[i], on, ref changed);
+                SetButtonActive(sectionButtons[i], on);
                 if (!on) continue;
                 var current = i == page.Section;
-                sectionPlates[i].sprite = PanelSprite(current ? TabletArt.ChipOn : TabletArt.Chip);
-                sectionNames[i].text = sections[i];
-                sectionNames[i].color = current ? TabletArt.Amber : TabletArt.Soft;
-                sectionNames[i].fontStyle = current ? FontStyle.Bold : FontStyle.Normal;
+                SetSprite(sectionPlates[i], PanelSprite(current ? TabletArt.ChipOn : TabletArt.Chip), ref changed);
+                SetText(sectionNames[i], sections[i], ref changed);
+                SetColor(sectionNames[i], current ? TabletArt.Amber : TabletArt.Soft, ref changed);
+                SetFontStyle(sectionNames[i], current ? FontStyle.Bold : FontStyle.Normal, ref changed);
             }
 
             var tiles = drawn ? null : page?.Tiles;
@@ -306,27 +474,36 @@ namespace CommsTablet.Tablet
                 page.Scroll = Mathf.Clamp(page.Scroll - page.Scroll % PerPage, 0, Mathf.Max(0, (count - 1) / PerPage * PerPage));
             var first = page?.Scroll ?? 0;
             // Side views are drawn for the tiles on screen only.
-            SideViews.Request(Enumerable.Range(first, Mathf.Max(0, Mathf.Min(PerPage, count - first))).Select(i => (tiles[i].Livery, tiles[i].Theme, tiles[i].Car)));
+            sideViewRequests.Clear();
+            var shownTiles = Mathf.Max(0, Mathf.Min(PerPage, count - first));
+            for (var i = 0; i < shownTiles; i++)
+            {
+                var tile = tiles[first + i];
+                if (tile.Livery != null)
+                    sideViewRequests.Add((tile.Livery, tile.Theme, tile.Car));
+            }
+            SideViews.Pin(this, sideViewRequests);
+            SideViews.Request(sideViewRequests);
             for (var i = 0; i < PerPage; i++)
             {
                 var index = first + i;
                 var on = index < count;
-                tilePlates[i].gameObject.SetActive(on);
-                tileNames[i].gameObject.SetActive(on);
-                tileButtons[i].SetActive(on);
+                SetActive(tilePlates[i], on, ref changed);
+                SetActive(tileNames[i], on, ref changed);
+                SetButtonActive(tileButtons[i], on);
                 var picture = on ? SideViews.Get(tiles[index].Livery, tiles[index].Theme) ?? tiles[index].Picture : null;
-                tilePictures[i].gameObject.SetActive(picture != null);
+                SetActive(tilePictures[i], picture != null, ref changed);
                 if (!on) continue;
                 var tile = tiles[index];
                 var current = page.IsOn(index);
-                tilePlates[i].sprite = PanelSprite(current ? TabletArt.CardOn : TabletArt.Card);
-                tileNames[i].text = tile.Label;
-                tileNames[i].color = tile.Back ? TabletArt.Soft : current ? TabletArt.Amber : TabletArt.Text;
-                tileNames[i].fontStyle = current ? FontStyle.Bold : FontStyle.Normal;
+                SetSprite(tilePlates[i], PanelSprite(current ? TabletArt.CardOn : TabletArt.Card), ref changed);
+                SetText(tileNames[i], tile.Label, ref changed);
+                SetColor(tileNames[i], tile.Back ? TabletArt.Soft : current ? TabletArt.Amber : TabletArt.Text, ref changed);
+                SetFontStyle(tileNames[i], current ? FontStyle.Bold : FontStyle.Normal, ref changed);
                 if (picture != null)
-                    tilePictures[i].sprite = picture;
+                    SetSprite(tilePictures[i], picture, ref changed);
                 // A back tile has no picture: its label fills it.
-                Place(tileNames[i].rectTransform, TileLabel(i, picture == null));
+                Place(tileNames[i].rectTransform, TileLabel(i, picture == null), ref changed);
             }
             // The home screen pages through apps as an app pages through its choices.
             var per = home ? AppsPerPage : PerPage;
@@ -337,39 +514,43 @@ namespace CommsTablet.Tablet
             }
             var pages = (count + per - 1) / per;
             var paging = pages > 1;
-            prevButton.SetActive(paging && first > 0);
-            nextButton.SetActive(paging && first + per < count);
-            prevPlate.gameObject.SetActive(paging);
-            nextPlate.gameObject.SetActive(paging);
-            prevArrow.gameObject.SetActive(paging);
-            nextArrow.gameObject.SetActive(paging);
-            prevArrow.color = first > 0 ? TabletArt.Text : TabletArt.Dim;
-            nextArrow.color = first + per < count ? TabletArt.Text : TabletArt.Dim;
+            SetButtonActive(prevButton, paging && first > 0);
+            SetButtonActive(nextButton, paging && first + per < count);
+            SetActive(prevPlate, paging, ref changed);
+            SetActive(nextPlate, paging, ref changed);
+            SetActive(prevArrow, paging, ref changed);
+            SetActive(nextArrow, paging, ref changed);
+            SetColor(prevArrow, first > 0 ? TabletArt.Text : TabletArt.Dim, ref changed);
+            SetColor(nextArrow, first + per < count ? TabletArt.Text : TabletArt.Dim, ref changed);
             // The page's hint, then where in the list this is.
             var hint = drawn ? null : page?.Hint;
             var place = paging ? $"{first / per + 1} / {pages}" : null;
-            pageCount.gameObject.SetActive(place != null || hint != null);
-            pageCount.text = hint != null && place != null ? $"{place}    {hint}" : hint ?? place;
+            SetActive(pageCount, place != null || hint != null, ref changed);
+            SetText(pageCount, hint != null && place != null ? $"{place}    {hint}" : hint ?? place, ref changed);
 
             if (guest == null)
-                DrawLayer(drawn ? page : null);
+            {
+                if (DrawLayer(drawn ? page : null))
+                    changed = true;
+            }
             else
             {
+                UntrackSelfDrawn();
                 // The map's plates go before the guest takes the buttons.
                 if (layerUsed && layerSurface != null)
                 {
-                    layerSurface.Run(() => { });
+                    if (layerSurface.Run(() => { }))
+                        changed = true;
                     layerUsed = false;
                 }
                 ShowGuest(guest);
             }
-            empty.gameObject.SetActive(!readout && !drawn && guest == null && count == 0);
-            empty.text = home
+            SetActive(empty, !readout && !drawn && guest == null && count == 0, ref changed);
+            SetText(empty, home
                 ? "No apps here yet.\nCrew is offered in Career; Spawn, Cargo, and the Workshop with the comms radio's cheat setting."
-                : page.EmptyText;
-            lastStatus = null;
-            // A guest's screen is drawn when it asks, when it is shown, and after a press; not twice a second.
-            if (guest == null || page != refreshedPage)
+                : page.EmptyText, ref changed);
+            // Only redraw the canvas texture when something visual actually changed.
+            if (changed)
                 dirty = true;
             refreshedPage = page;
         }
@@ -403,41 +584,51 @@ namespace CommsTablet.Tablet
             }
             else
             {
-                title = Clean(display.title);
-                content = page.Notice ?? Clean(display.content);
-                action = page.Notice != null ? "" : Clean(display.action);
+                title = cleanTitle.Get(display.title);
+                content = page.Notice ?? cleanContent.Get(display.content);
+                action = page.Notice != null ? "" : cleanAction.Get(display.action);
             }
             var arrow = radio.Arrow != null && radio.Arrow.gameObject.activeSelf && page?.Mode != null && !Mounted;
             var left = arrow && radio.Arrow.transform.localEulerAngles.y < 90f;
             var readout = page != null && page.Readout;
             // The modes change step inside their own updates (aiming onto a car, say): their buttons follow.
-            if (page != null && string.Join("|", page.Actions ?? (IReadOnlyList<string>)new string[0]) != actionsShown)
+            if (page != null && !page.DrawsItself && ActionsChanged(page.Actions))
                 refreshAt = 0f;
-            var status = $"{readout}\n{title}\n{content}\n{action}\n{arrow}{left}";
-            if (status == lastStatus)
+            if (statusValid && readout == lastReadout && arrow == lastArrow && left == lastLeft
+                && title == lastStatusTitle && content == lastStatusContent && action == lastStatusAction)
                 return;
-            lastStatus = status;
-            statusTitle.text = readout ? "" : title;
-            statusContent.text = readout ? "" : content;
-            statusAction.text = readout ? "" : action;
-            readTitle.text = readout ? title : "";
-            readContent.text = readout ? content : "";
-            readAction.text = readout ? action : "";
-            directionArrow.gameObject.SetActive(arrow && !readout);
-            directionArrow.rectTransform.localScale = new Vector3(left ? -1f : 1f, 1f, 1f);
-            readArrow.gameObject.SetActive(arrow && readout);
-            readArrow.rectTransform.localScale = new Vector3(left ? -1f : 1f, 1f, 1f);
-            dirty = true;
+            statusValid = true;
+            lastReadout = readout;
+            lastArrow = arrow;
+            lastLeft = left;
+            lastStatusTitle = title;
+            lastStatusContent = content;
+            lastStatusAction = action;
+            var changed = false;
+            SetText(statusTitle, readout ? "" : title, ref changed);
+            SetText(statusContent, readout ? "" : content, ref changed);
+            SetText(statusAction, readout ? "" : action, ref changed);
+            SetText(readTitle, readout ? title : "", ref changed);
+            SetText(readContent, readout ? content : "", ref changed);
+            SetText(readAction, readout ? action : "", ref changed);
+            var scale = new Vector3(left ? -1f : 1f, 1f, 1f);
+            SetActive(directionArrow, arrow && !readout, ref changed);
+            SetLocalScale(directionArrow.rectTransform, scale, ref changed);
+            SetActive(readArrow, arrow && readout, ref changed);
+            SetLocalScale(readArrow.rectTransform, scale, ref changed);
+            if (changed)
+                dirty = true;
         }
 
-        private static string Clean(TextMeshPro text)
+        private static string Clean(string rawText, FontStyles fontStyle)
         {
-            if (text == null)
+            if (string.IsNullOrEmpty(rawText))
                 return "";
             // The radio's texts carry escaped line breaks ("\\n") that its TextMeshPro reads as breaks.
-            var raw = (text.text ?? "").Replace("\\n", "\n");
-            var upper = (text.fontStyle & FontStyles.UpperCase) != 0 || raw.Contains("<uppercase>");
-            var plain = Tags.Replace(raw, "").Trim();
+            var raw = rawText.IndexOf("\\n", System.StringComparison.Ordinal) >= 0 ? rawText.Replace("\\n", "\n") : rawText;
+            var hasTag = raw.IndexOf('<') >= 0;
+            var upper = (fontStyle & FontStyles.UpperCase) != 0 || (hasTag && raw.IndexOf("<uppercase>", System.StringComparison.Ordinal) >= 0);
+            var plain = (hasTag ? Tags.Replace(raw, "") : raw).Trim();
             return upper ? plain.ToUpperInvariant() : plain;
         }
 
@@ -514,25 +705,28 @@ namespace CommsTablet.Tablet
 
         // ---- The layer of a page that draws itself (the map) ------------------
 
-        /// <summary>A pass of a page that draws itself; with none, an empty pass hides what the last one drew.</summary>
-        private void DrawLayer(TabletPage page)
+        /// <summary>A pass of a page that draws itself; with none, an empty pass hides what the last one drew. Returns whether any visual changed.</summary>
+        private bool DrawLayer(TabletPage page)
         {
+            TrackSelfDrawn(page);
             if (layerSurface == null)
-                return;
+                return false;
             if (page == null)
             {
+                var changed = false;
                 if (layerUsed)
                 {
-                    layerSurface.Run(() => { });
+                    changed = layerSurface.Run(() => { });
                     layerUsed = false;
                 }
                 PlaceMapButton(UnityEngine.Rect.zero);
-                return;
+                return changed;
             }
             layerUsed = true;
+            bool drewChange;
             try
             {
-                layerSurface.Run(page.Draw);
+                drewChange = layerSurface.Run(page.Draw);
                 layerFailed = null;
             }
             catch (System.Exception e)
@@ -541,9 +735,10 @@ namespace CommsTablet.Tablet
                 if (layerFailed != page.Name)
                     Main.Mod?.Logger.LogException($"The tablet's {page.Name} page failed to draw", e);
                 layerFailed = page.Name;
-                layerSurface.Run(() => { });
+                drewChange = layerSurface.Run(() => { });
             }
             PlaceMapButton(page.PressArea);
+            return drewChange;
         }
 
         /// <summary>The button over the open part of a map: on where the page has one, pressed where the player points.</summary>
@@ -1020,7 +1215,7 @@ namespace CommsTablet.Tablet
             directionArrow = Picture("Direction", new Rect(766, 861, 44, 44), TabletArt.Arrow, TabletArt.Amber);
             controlsBuilt = true;
             refreshAt = 0f;
-            lastStatus = null;
+            ResetStatusCache();
             GetComponent<DV.CabControls.ItemBase>()?.ReCacheRenderers();
         }
 
@@ -1093,8 +1288,48 @@ namespace CommsTablet.Tablet
             }
         }
 
+        private void TrackSelfDrawn(TabletPage page)
+        {
+            if (page is MapPage)
+            {
+                mapScreens.Add(this);
+            }
+            else if (mapScreens.Remove(this) && !AnyActive(mapScreens))
+            {
+                Map.BookletRenderer.Hide();
+                Map.TabletMap.ReleaseTexture();
+            }
+
+            if (page is AheadPage)
+            {
+                aheadScreens.Add(this);
+            }
+            else if (aheadScreens.Remove(this) && !AnyActive(aheadScreens))
+            {
+                Map.TabletAhead.ReleaseTexture();
+            }
+        }
+
+        private void UntrackSelfDrawn()
+        {
+            if (mapScreens.Remove(this) && !AnyActive(mapScreens))
+            {
+                Map.BookletRenderer.Hide();
+                Map.TabletMap.ReleaseTexture();
+            }
+            if (aheadScreens.Remove(this) && !AnyActive(aheadScreens))
+                Map.TabletAhead.ReleaseTexture();
+        }
+
+        private static bool AnyActive(HashSet<TabletScreen> screens)
+        {
+            screens.RemoveWhere(s => s == null);
+            return screens.Count > 0;
+        }
+
         private void ReleaseTexture()
         {
+            UntrackSelfDrawn();
             if (surface != null) surface.enabled = false;
             if (screenMaterial != null) screenMaterial.mainTexture = null;
             if (texture == null) return;
@@ -1102,8 +1337,13 @@ namespace CommsTablet.Tablet
             Object.Destroy(texture);
             texture = null;
             dirty = true;
-            Map.TabletMap.ReleaseTexture();
-            Map.TabletAhead.ReleaseTexture();
+            if (!AnyActive(mapScreens))
+            {
+                Map.BookletRenderer.Hide();
+                Map.TabletMap.ReleaseTexture();
+            }
+            if (!AnyActive(aheadScreens))
+                Map.TabletAhead.ReleaseTexture();
         }
 
         /// <summary>The map layer's pool of buttons, which its plates take in order, and the map's own button behind them.</summary>

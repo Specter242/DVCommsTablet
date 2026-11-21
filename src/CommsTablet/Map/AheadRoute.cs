@@ -31,15 +31,39 @@ namespace CommsTablet.Map
         private const float MovingCar = 1;
 
         private static AheadGoal goal;
+        private static AheadGoal destination;
         private static Route route;
         private static RouteSearch search;
         private static ConsistEnd? searchLeader;
         private static float nextSearch;
         private static bool throughCars;
         private static bool warned;
+        private static bool lastStale = true;
+
+        /// <summary>Monotonic revision bumped whenever the route, note, or destination state changes.</summary>
+        internal static int Revision { get; private set; }
+
+        /// <summary>Whether a valid route is held with no search running and the last follow did not need a new search.</summary>
+        internal static bool Stable => route != null && search == null && !lastStale;
 
         /// <summary>A destination the player set: it comes before any job, until the train is there or the player clears it.</summary>
-        internal static AheadGoal Destination { get; set; }
+        internal static AheadGoal Destination
+        {
+            get => destination;
+            set
+            {
+                if (ReferenceEquals(destination, value))
+                    return;
+                var wasActive = destination != null && destination.SameAs(goal);
+                destination = value;
+                if (goal != null && !goal.SameAs(destination))
+                {
+                    CancelSearch();
+                    if (wasActive && destination == null)
+                        nextSearch = 0;
+                }
+            }
+        }
 
         /// <summary>Why there is no route to show, or null.</summary>
         internal static string Note { get; private set; }
@@ -49,14 +73,24 @@ namespace CommsTablet.Map
 
         internal static void Forget()
         {
+            CancelSearch();
             goal = null;
+            destination = null;
             route = null;
-            search = null;
             searchLeader = null;
             nextSearch = 0;
             throughCars = false;
+            lastStale = true;
             Note = null;
-            Destination = null;
+            Revision++;
+        }
+
+        private static void CancelSearch()
+        {
+            if (search == null)
+                return;
+            search.Cancel();
+            search = null;
         }
 
         /// <summary>The goal for this train now, or null: the aligned tracks are all there is to show.</summary>
@@ -68,11 +102,15 @@ namespace CommsTablet.Map
         {
             if (!wanted.SameAs(goal))
             {
+                CancelSearch();
                 goal = wanted;
                 route = null;
-                search = null;
+                searchLeader = null;
                 nextSearch = 0;
+                throughCars = false;
+                lastStale = true;
                 Note = "Finding the route to " + wanted.Name;
+                Revision++;
             }
             TakeResult();
 
@@ -92,7 +130,10 @@ namespace CommsTablet.Map
                     path = AheadPath.Routed(network.Graph, tail.At, tail.Outward.Reverse(), train.Length, route, along,
                         wanted.Offset.HasValue ? (double?)null : train.Length + ArrivalMargin, j => selected[j].selectedBranch);
                     if (ReferenceEquals(wanted, Destination) && route.Legs.Count == 1 && path.Length - path.RouteStart < AtReversal && Math.Abs(towardLeader) < Stopped)
+                    {
                         Destination = null;
+                        Revision++;
+                    }
                     var atReversal = leg.EndsInReversal && leg.Length - along < AtReversal && Math.Abs(towardLeader) < Stopped;
                     if (atReversal || towardLeader < -Stopped)
                     {
@@ -103,6 +144,7 @@ namespace CommsTablet.Map
                 else
                     stale = true;
             }
+            lastStale = stale;
             if (stale && search == null && Time.realtimeSinceStartup >= nextSearch)
                 Start(network, train, wanted, leadNext);
             return path;
@@ -114,6 +156,8 @@ namespace CommsTablet.Map
                 return;
             var done = search;
             search = null;
+            if (done.Cancelled || done.Failure == RouteFailure.Cancelled)
+                return;
             if (done.Error != null)
             {
                 if (!warned)
@@ -125,6 +169,7 @@ namespace CommsTablet.Map
                 route = done.Route;
                 throughCars = done.ThroughCars;
                 Note = null;
+                Revision++;
                 return;
             }
             // With the leading end asked for and no way from it, the route in hand stands.
@@ -135,10 +180,12 @@ namespace CommsTablet.Map
             if (there && goal.SameAs(Destination))
                 Destination = null;
             Note = there ? "The train is on " + goal.Name : "No way found to " + goal.Name;
+            Revision++;
         }
 
         private static void Start(TrackNetwork network, AheadTrain train, AheadGoal wanted, ConsistEnd? leader)
         {
+            CancelSearch();
             nextSearch = Time.realtimeSinceStartup + SearchGap;
             searchLeader = leader;
             search = new RouteSearch(network.Graph, RequestFor(network, train, wanted, leader));
@@ -165,6 +212,7 @@ namespace CommsTablet.Map
                 OutwardB = rear.Outward,
                 TrainLength = train.Length,
                 Goal = new TrackPosition(wanted.Track, wanted.Offset ?? network.Graph.Length(wanted.Track) / 2),
+                GoalIntoTrack = wanted.Offset.HasValue ? (double?)null : train.Length + ArrivalMargin,
                 FirstLeader = leader,
                 ShovingEnd = shoving,
                 SwitchLie = j => lie[j],

@@ -18,9 +18,26 @@ namespace CommsTablet.Tablet
         /// <summary>How far past the car's box (at least) a part still counts as the car's: 3 m, or a quarter of its length.</summary>
         private const float Reach = 3f;
 
-        private static readonly Dictionary<(TrainCarLivery, PaintTheme), Sprite> views = new Dictionary<(TrainCarLivery, PaintTheme), Sprite>();
-        private static readonly HashSet<(TrainCarLivery, PaintTheme)> failed = new HashSet<(TrainCarLivery, PaintTheme)>();
+        /// <summary>Most side views kept at once; oldest unused entries are evicted and destroyed.</summary>
+        private const int MaxCached = 80;
+        private const float InitialFailBackoff = 5f, MaxFailBackoff = 120f;
+
+        private struct Entry
+        {
+            internal (TrainCarLivery Livery, PaintTheme Theme) Key;
+            internal Sprite Sprite;
+        }
+
+        private static readonly Dictionary<(TrainCarLivery, PaintTheme), LinkedListNode<Entry>> views =
+            new Dictionary<(TrainCarLivery, PaintTheme), LinkedListNode<Entry>>();
+        private static readonly LinkedList<Entry> lru = new LinkedList<Entry>();
+        private static readonly Dictionary<(TrainCarLivery, PaintTheme), (float retryAt, int attempts)> failed =
+            new Dictionary<(TrainCarLivery, PaintTheme), (float, int)>();
+        private static readonly Dictionary<TabletScreen, HashSet<(TrainCarLivery, PaintTheme)>> pinnedByScreen =
+            new Dictionary<TabletScreen, HashSet<(TrainCarLivery, PaintTheme)>>();
+        private static readonly List<TabletScreen> deadScreens = new List<TabletScreen>();
         private static readonly List<(TrainCarLivery livery, PaintTheme theme, TrainCar car)> wanted = new List<(TrainCarLivery, PaintTheme, TrainCar)>();
+        private static bool sceneHooked;
         private static GameObject host;
         private static Camera camera;
         private static Light light;
@@ -36,8 +53,129 @@ namespace CommsTablet.Tablet
         internal static event Action Drawn;
 
         /// <summary>The side view of <paramref name="livery"/>, in <paramref name="theme"/> if given, if it is drawn; else null.</summary>
-        internal static Sprite Get(TrainCarLivery livery, PaintTheme theme = null) =>
-            livery != null && views.TryGetValue((livery, theme), out var view) && view != null ? view : null;
+        internal static Sprite Get(TrainCarLivery livery, PaintTheme theme = null)
+        {
+            if (livery == null)
+                return null;
+            var key = (livery, theme);
+            if (!views.TryGetValue(key, out var node))
+                return null;
+            var sprite = node.Value.Sprite;
+            if (sprite == null)
+            {
+                lru.Remove(node);
+                views.Remove(key);
+                return null;
+            }
+            if (node != lru.First)
+            {
+                lru.Remove(node);
+                lru.AddFirst(node);
+            }
+            return sprite;
+        }
+
+        private static void EnsureSceneHook()
+        {
+            if (sceneHooked)
+                return;
+            sceneHooked = true;
+            UnityEngine.SceneManagement.SceneManager.sceneLoaded += (_, __) => failed.Clear();
+        }
+
+        private static bool CanRetry((TrainCarLivery, PaintTheme) key) =>
+            !failed.TryGetValue(key, out var info) || Time.unscaledTime >= info.retryAt;
+
+        private static bool IsWanted((TrainCarLivery livery, PaintTheme theme) key)
+        {
+            for (var i = 0; i < wanted.Count; i++)
+                if (wanted[i].livery == key.livery && wanted[i].theme == key.theme)
+                    return true;
+            return false;
+        }
+
+        /// <summary>Records the side-view keys currently bound to a screen's tiles so LRU eviction never destroys a live sprite.</summary>
+        internal static void Pin(TabletScreen screen, IList<(TrainCarLivery livery, PaintTheme theme, TrainCar car)> shown)
+        {
+            if (screen == null)
+                return;
+            if (shown == null || shown.Count == 0)
+            {
+                pinnedByScreen.Remove(screen);
+                return;
+            }
+            if (!pinnedByScreen.TryGetValue(screen, out var set))
+                pinnedByScreen[screen] = set = new HashSet<(TrainCarLivery, PaintTheme)>();
+            else
+                set.Clear();
+            for (var i = 0; i < shown.Count; i++)
+                if (shown[i].livery != null)
+                    set.Add((shown[i].livery, shown[i].theme));
+        }
+
+        internal static void Unpin(TabletScreen screen)
+        {
+            if (screen != null)
+                pinnedByScreen.Remove(screen);
+        }
+
+        private static bool IsPinned((TrainCarLivery, PaintTheme) key)
+        {
+            deadScreens.Clear();
+            var pinned = false;
+            foreach (var kv in pinnedByScreen)
+            {
+                if (kv.Key == null)
+                    deadScreens.Add(kv.Key);
+                else if (kv.Value.Contains(key))
+                    pinned = true;
+            }
+            for (var i = 0; i < deadScreens.Count; i++)
+                pinnedByScreen.Remove(deadScreens[i]);
+            return pinned;
+        }
+
+        private static void DestroySprite(Sprite sprite)
+        {
+            if (sprite == null)
+                return;
+            var tex = sprite.texture;
+            Object.Destroy(sprite);
+            if (tex != null)
+                Object.Destroy(tex);
+        }
+
+        private static void Store((TrainCarLivery livery, PaintTheme theme) key, Sprite view)
+        {
+            if (views.TryGetValue(key, out var existing))
+            {
+                var old = existing.Value.Sprite;
+                existing.Value = new Entry { Key = key, Sprite = view };
+                if (existing != lru.First)
+                {
+                    lru.Remove(existing);
+                    lru.AddFirst(existing);
+                }
+                if (old != view)
+                    DestroySprite(old);
+            }
+            else
+            {
+                var node = lru.AddFirst(new Entry { Key = key, Sprite = view });
+                views[key] = node;
+            }
+            while (views.Count > MaxCached)
+            {
+                var candidate = lru.Last;
+                while (candidate != null && IsPinned(candidate.Value.Key))
+                    candidate = candidate.Previous;
+                if (candidate == null)
+                    break;
+                lru.Remove(candidate);
+                views.Remove(candidate.Value.Key);
+                DestroySprite(candidate.Value.Sprite);
+            }
+        }
 
         /// <summary>
         /// Makes these the views to draw next, in order: the tiles on screen.
@@ -46,11 +184,17 @@ namespace CommsTablet.Tablet
         /// </summary>
         internal static void Request(IEnumerable<(TrainCarLivery livery, PaintTheme theme, TrainCar car)> views)
         {
+            EnsureSceneHook();
             wanted.Clear();
             foreach (var view in views)
-                if (view.livery != null && !failed.Contains((view.livery, view.theme)) && Get(view.livery, view.theme) == null
-                    && !wanted.Any(w => w.livery == view.livery && w.theme == view.theme))
-                    wanted.Add(view);
+            {
+                if (view.livery == null)
+                    continue;
+                var key = (view.livery, view.theme);
+                if (!CanRetry(key) || Get(view.livery, view.theme) != null || IsWanted(key))
+                    continue;
+                wanted.Add(view);
+            }
         }
 
         /// <summary>Draws at most one waiting view this frame; called by each visible screen.</summary>
@@ -58,27 +202,42 @@ namespace CommsTablet.Tablet
         {
             if (wanted.Count == 0 || frame == Time.frameCount)
                 return;
+            EnsureSceneHook();
             frame = Time.frameCount;
             var (livery, theme, car) = wanted[0];
             wanted.RemoveAt(0);
             // A paint's view of a car deleted meanwhile: dropped, not failed, so a later car of that livery gets it.
             if (theme != null && car == null)
                 return;
+            var key = (livery, theme);
             Sprite view = null;
+            var threw = false;
             try
             {
                 view = Draw(livery, theme, car);
             }
             catch (Exception e)
             {
-                Main.Mod?.Logger.Warning($"No side view for {livery?.id}{(theme != null ? " in " + theme.name : "")}: {e.GetBaseException().Message}");
+                threw = true;
+                if (!failed.ContainsKey(key))
+                    Main.Mod?.Logger.Warning($"No side view for {livery?.id}{(theme != null ? " in " + theme.name : "")}: {e.GetBaseException().Message}");
             }
             if (view == null)
             {
-                failed.Add((livery, theme));
+                if (!threw)
+                {
+                    // Clean null (e.g. missing prefab or no renderable parts): don't re-render on a timer until scene load.
+                    failed[key] = (float.PositiveInfinity, 1);
+                    return;
+                }
+                failed.TryGetValue(key, out var prev);
+                var attempts = prev.attempts + 1;
+                var delay = Mathf.Min(MaxFailBackoff, InitialFailBackoff * (1 << Mathf.Min(attempts - 1, 5)));
+                failed[key] = (Time.unscaledTime + delay, attempts);
                 return;
             }
-            views[(livery, theme)] = view;
+            failed.Remove(key);
+            Store(key, view);
             Drawn?.Invoke();
         }
 
@@ -281,19 +440,43 @@ namespace CommsTablet.Tablet
                 RenderTexture.active = look;
                 probe.ReadPixels(new Rect(0, 0, look.width, look.height), 0, 0, false);
                 int w = look.width, h = look.height;
-                var pixels = probe.GetPixels32();
                 int x0 = w, y0 = h, x1 = -1, y1 = -1;
-                for (var y = 0; y < h; y++)
-                    for (var x = 0; x < w; x++)
+                if (probe.format == TextureFormat.RGBA32)
+                {
+                    var pixels = probe.GetRawTextureData<Color32>();
+                    for (var y = 0; y < h; y++)
                     {
-                        var c = pixels[y * w + x];
-                        if (255 - c.r + c.g + 255 - c.b < 48)
-                            continue;
-                        if (x < x0) x0 = x;
-                        if (x > x1) x1 = x;
-                        if (y < y0) y0 = y;
-                        if (y > y1) y1 = y;
+                        var row = y * w;
+                        for (var x = 0; x < w; x++)
+                        {
+                            var c = pixels[row + x];
+                            if (255 - c.r + c.g + 255 - c.b < 48)
+                                continue;
+                            if (x < x0) x0 = x;
+                            if (x > x1) x1 = x;
+                            if (y < y0) y0 = y;
+                            if (y > y1) y1 = y;
+                        }
                     }
+                }
+                else
+                {
+                    var pixels = probe.GetPixels32();
+                    for (var y = 0; y < h; y++)
+                    {
+                        var row = y * w;
+                        for (var x = 0; x < w; x++)
+                        {
+                            var c = pixels[row + x];
+                            if (255 - c.r + c.g + 255 - c.b < 48)
+                                continue;
+                            if (x < x0) x0 = x;
+                            if (x > x1) x1 = x;
+                            if (y < y0) y0 = y;
+                            if (y > y1) y1 = y;
+                        }
+                    }
+                }
                 if (x1 < 0)
                     return new Rect(0, 0, 1, 1);
                 var seen = Rect.MinMaxRect((float)x0 / w, (float)y0 / h, (x1 + 1f) / w, (y1 + 1f) / h);

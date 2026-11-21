@@ -9,16 +9,26 @@
 # literals (UTF-16), as AI Engineer's check-public-dll.sh does.
 set -euo pipefail
 dll="${1:?usage: scripts/check-public-dll.sh CommsTablet.dll}"
+[[ -f "$dll" ]] || { echo "DLL not found: $dll" >&2; exit 1; }
+command -v strings >/dev/null || { echo "strings is required" >&2; exit 1; }
 names=(ForTest SelfTest HitInPlace SlotsShown MapButtonShown HostPartsShown LocoMarks TrackAtCanvas
-       PaperReplaced FailedIn)
+       PaperReplaced FailedIn PageShown StationShown TabSetShown ViewShown FitShown SlotAt ViewOf Renders)
 labels=("self-test" "selftest" "Test App")
 found=()
 literals="$(strings -el "$dll")"
+has_match() {
+    local rc=0
+    LC_ALL=C grep "$@" || rc=$?
+    if (( rc == 0 )); then return 0; fi
+    if (( rc == 1 )); then return 1; fi
+    echo "grep failed with status $rc" >&2
+    exit "$rc"
+}
 for n in "${names[@]}"; do
-    if grep -a -q -F "$n" "$dll" || grep -q -F "$n" <<<"$literals"; then found+=("$n"); fi
+    if has_match -a -q -F -- "$n" "$dll" || has_match -q -F -- "$n" <<<"$literals"; then found+=("$n"); fi
 done
 for l in "${labels[@]}"; do
-    if grep -q -i -F "$l" <<<"$literals"; then found+=("\"$l\""); fi
+    if has_match -q -i -F -- "$l" <<<"$literals"; then found+=("\"$l\""); fi
 done
 if (( ${#found[@]} )); then
     echo "The public build holds the self-test's access, hooks, or records: ${found[*]}" >&2

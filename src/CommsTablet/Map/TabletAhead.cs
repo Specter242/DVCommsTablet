@@ -29,11 +29,45 @@ namespace CommsTablet.Map
         private static bool showAligned;
         private static Texture2D texture;
         private static Color32[] pixels;
-        private static int painted;
+        private static int painted, textureVersion;
 
         private static View view;
         private static string why;
+        private static ViewKey cachedKey;
+        private static bool hasCachedView, cachedPathComplete;
+        private static readonly List<(int junction, int branch)> cachedSwitches = new List<(int, int)>();
         private static readonly Dictionary<string, string> yardNames = new Dictionary<string, string>();
+
+        private struct ViewKey : IEquatable<ViewKey>
+        {
+            public TrackNetwork Network;
+            public TrainCar Loco, FrontCar, RearCar;
+            public int Cars, LengthDm;
+            public int RearTrack, RearOffsetDm, Toward;
+            public int FrontTrack, FrontOffsetDm, FrontOutward;
+            public int BackTrack, BackOffsetDm, BackOutward;
+            public int SpeedQuarterMs, SpeedKmh;
+            public bool Stopped, LeaderStopped, LeaderReversing;
+            public bool ShowAligned, HasGoal;
+            public int GoalTrack;
+            public string GoalJobId, GoalName, GoalWhy;
+            public double? GoalOffset;
+            public int PostedChanges, ShapesRead, RouteRevision;
+
+            public bool Equals(ViewKey o) =>
+                ReferenceEquals(Network, o.Network)
+                && Loco == o.Loco && FrontCar == o.FrontCar && RearCar == o.RearCar
+                && Cars == o.Cars && LengthDm == o.LengthDm
+                && RearTrack == o.RearTrack && RearOffsetDm == o.RearOffsetDm && Toward == o.Toward
+                && FrontTrack == o.FrontTrack && FrontOffsetDm == o.FrontOffsetDm && FrontOutward == o.FrontOutward
+                && BackTrack == o.BackTrack && BackOffsetDm == o.BackOffsetDm && BackOutward == o.BackOutward
+                && SpeedQuarterMs == o.SpeedQuarterMs && SpeedKmh == o.SpeedKmh
+                && Stopped == o.Stopped && LeaderStopped == o.LeaderStopped && LeaderReversing == o.LeaderReversing
+                && ShowAligned == o.ShowAligned && HasGoal == o.HasGoal && GoalTrack == o.GoalTrack
+                && GoalJobId == o.GoalJobId && GoalName == o.GoalName && GoalWhy == o.GoalWhy
+                && GoalOffset == o.GoalOffset
+                && PostedChanges == o.PostedChanges && ShapesRead == o.ShapesRead && RouteRevision == o.RouteRevision;
+        }
 
         private static Color32 C(int rgb) => new Color32((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb, 255);
 
@@ -63,6 +97,10 @@ namespace CommsTablet.Map
             ReleaseTexture();
             view = null;
             why = null;
+            hasCachedView = false;
+            cachedPathComplete = false;
+            cachedKey = default;
+            cachedSwitches.Clear();
             Status = "";
             showAligned = false;
             yardNames.Clear();
@@ -80,32 +118,88 @@ namespace CommsTablet.Map
             painted = 0;
         }
 
+        private static bool SwitchesMatch(Junction[] junctions)
+        {
+            for (var i = 0; i < cachedSwitches.Count; i++)
+            {
+                var (junction, branch) = cachedSwitches[i];
+                if (junction < 0 || junction >= junctions.Length || junctions[junction] == null || junctions[junction].selectedBranch != branch)
+                    return false;
+            }
+            return true;
+        }
+
         private static View Read()
         {
             var network = MapWorld.Network;
             if (network == null)
             {
+                hasCachedView = false;
                 why = "Reading the track network";
                 return null;
             }
             var train = AheadTrain.Read(network, out why);
             if (train == null)
+            {
+                hasCachedView = false;
                 return null;
+            }
             var junctions = network.Junctions;
             var shapes = network.Shapes;
-            var horizon = train.Length + LongestView + Beyond;
             var goal = AheadRoute.GoalFor(network, train);
             // Looking at the aligned tracks lasts as long as there is a route to come back to.
             if (goal == null)
                 showAligned = false;
-            var route = goal != null && !showAligned ? AheadRoute.Follow(network, train, goal) : null;
+
+            var key = new ViewKey
+            {
+                Network = network,
+                Loco = train.Loco,
+                FrontCar = train.LocoFrontEnd.Car,
+                RearCar = train.LocoRearEnd.Car,
+                Cars = train.Cars,
+                LengthDm = (int)Math.Round(train.Length * 10),
+                RearTrack = train.Rear.Track,
+                RearOffsetDm = (int)Math.Round(train.Rear.Offset * 10),
+                Toward = (int)train.Toward,
+                FrontTrack = train.LocoFrontEnd.At.Track,
+                FrontOffsetDm = (int)Math.Round(train.LocoFrontEnd.At.Offset * 10),
+                FrontOutward = (int)train.LocoFrontEnd.Outward,
+                BackTrack = train.LocoRearEnd.At.Track,
+                BackOffsetDm = (int)Math.Round(train.LocoRearEnd.At.Offset * 10),
+                BackOutward = (int)train.LocoRearEnd.Outward,
+                SpeedQuarterMs = (int)Math.Round(train.Speed * 4),
+                SpeedKmh = (int)Math.Round(Math.Abs(train.Speed) * 3.6),
+                Stopped = Math.Abs(train.Speed) < 1f,
+                LeaderStopped = AheadRoute.Leader.HasValue && Math.Abs(AheadRoute.SpeedToward(train, AheadRoute.Leader.Value)) < 1f,
+                LeaderReversing = AheadRoute.Leader.HasValue && AheadRoute.SpeedToward(train, AheadRoute.Leader.Value) < -1f,
+                ShowAligned = showAligned,
+                HasGoal = goal != null,
+                GoalTrack = goal?.Track ?? -1,
+                GoalJobId = goal?.JobId,
+                GoalName = goal?.Name,
+                GoalWhy = goal?.Why,
+                GoalOffset = goal?.Offset,
+                PostedChanges = shapes.PostedChanges,
+                ShapesRead = shapes.ShapesRead,
+                RouteRevision = AheadRoute.Revision,
+            };
+            var routeNeeded = goal != null && !showAligned;
+            var routeReady = !routeNeeded || (view != null && view.Routed && cachedPathComplete && AheadRoute.Stable);
+            if (hasCachedView && view != null && routeReady && key.Equals(cachedKey) && SwitchesMatch(junctions))
+                return view;
+
+            var horizon = train.Length + LongestView + Beyond;
+            var route = routeNeeded ? AheadRoute.Follow(network, train, goal) : null;
             AheadPath path;
             double nose;
             double speed;
+            var pathComplete = true;
             if (route != null)
             {
                 // Past the view, tracks are read a few a frame, and the time to the end waits for them.
-                path = shapes.ReadSoon(route) ? route : route.Upto(horizon);
+                pathComplete = shapes.ReadSoon(route);
+                path = pathComplete ? route : route.Upto(horizon);
                 nose = route.RouteStart;
                 speed = Math.Max(0, AheadRoute.SpeedToward(train, AheadRoute.Leader.Value));
             }
@@ -116,20 +210,51 @@ namespace CommsTablet.Map
                 speed = Math.Abs(train.Speed);
             }
             shapes.WantPosted(route ?? path);
-            var profile = AheadProfile.Build(path, t => shapes[t]);
+            var readable = ReadablePrefix(path, shapes);
+            if (readable.Legs.Count == 0)
+            {
+                hasCachedView = false;
+                why = "Could not read the track ahead";
+                return null;
+            }
+            var profile = AheadProfile.Build(readable, t => shapes[t]);
             var routed = route != null;
+            var clampedNose = Math.Min(nose, readable.Length);
             var result = new View
             {
                 Network = network,
                 Train = train,
                 Profile = profile,
-                Nose = nose,
-                Run = RunEstimate.Compute(profile, nose, train.Length, speed),
+                Nose = clampedNose,
+                Run = RunEstimate.Compute(profile, clampedNose, train.Length, speed),
                 Goal = goal,
                 Routed = routed,
             };
-            result.Waypoints = AheadWaypoints.Pick(profile, nose, t => shapes[t], s => Flagged(result, s));
+            result.Waypoints = AheadWaypoints.Pick(profile, result.Nose, t => shapes[t], s => Flagged(result, s));
+            cachedSwitches.Clear();
+            var switches = path.Switches;
+            for (var i = 0; i < switches.Count; i++)
+            {
+                var j = switches[i].Junction;
+                if (j >= 0 && j < junctions.Length && junctions[j] != null)
+                    cachedSwitches.Add((j, junctions[j].selectedBranch));
+            }
+            key.PostedChanges = shapes.PostedChanges;
+            key.ShapesRead = shapes.ShapesRead;
+            key.RouteRevision = AheadRoute.Revision;
+            cachedKey = key;
+            cachedPathComplete = pathComplete;
+            hasCachedView = true;
+            view = result;
             return result;
+        }
+
+        private static AheadPath ReadablePrefix(AheadPath path, TrackShapes shapes)
+        {
+            for (var i = 0; i < path.Legs.Count; i++)
+                if (!shapes.TryGet(path.Legs[i].Track, out _))
+                    return path.Upto(path.Legs[i].Start);
+            return path;
         }
 
         // The switch to point out: on a route one set against it, on the aligned tracks one set off the main line.
@@ -189,7 +314,7 @@ namespace CommsTablet.Map
             var total = span + back;
             Paint(view, start, total);
             Box(new Rect(ChartX - 2, ChartY - 2, ChartW + 4, ProfileBottom + 4), Look_Well);
-            Picture(new Rect(ChartX, ChartY, ChartW, ChartH), texture);
+            Picture(new Rect(ChartX, ChartY, ChartW, ChartH), texture, textureVersion);
             ChartWords(view, start, total, span);
             Rows(view);
             Status = StatusLine(view);
@@ -677,6 +802,7 @@ namespace CommsTablet.Map
 
             texture.SetPixels32(pixels);
             texture.Apply(false);
+            textureVersion++;
         }
 
         private static Color32 Dim(Color32 c, float alpha) => new Color32(c.r, c.g, c.b, (byte)(alpha * 255));
