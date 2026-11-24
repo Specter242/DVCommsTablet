@@ -718,7 +718,7 @@ namespace CommsTablet.Map
                     owner.BackToAhead();
                     return;
                 }
-                owner.Notice = $"Track Ahead now routes to {AheadRoute.Destination.Name}";
+                owner.Notice = $"Route set to {AheadRoute.Destination.Name}. It throws no switches; Track Ahead shows those set against it";
                 Changed();
             }
             if (forAhead)

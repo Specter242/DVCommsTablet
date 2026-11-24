@@ -42,17 +42,7 @@ namespace CommsTablet.Tablet
         }
     }
 
-    /// <summary>
-    /// The tablet in the starting kit once per save when any guest app is
-    /// merged, as Realistic Firing and AI Engineer gave theirs
-    /// (<c>FiringTabletStartingItems</c>, <c>EngineerTabletStartingItems</c>):
-    /// the kit's list copied, the tablet appended, and this mod's own key set
-    /// in the save. The guests' keys are theirs: a merged guest gives nothing
-    /// and sets nothing. The stock safeguard checks every saved storage
-    /// (mounted gadgets included) before adding a missing kit item, and a
-    /// saved guest tablet already reads as this one (<see cref="TabletRetirement"/>).
-    /// </summary>
-    [HarmonyPatch(typeof(StartingItemsController), "GetStartingItemsPrefabs")]
+ [HarmonyPatch(typeof(StartingItemsController), "GetStartingItemsPrefabs")]
     internal static class TabletStartingItems
     {
         internal const string GivenKey = "CommsTablet_TabletGiven";
@@ -70,9 +60,20 @@ namespace CommsTablet.Tablet
             }
         }
 
+        /// <summary>
+        /// Whether a save's starting kit holds the tablet: any mode but Career
+        /// (Free Roam, the sandbox); a career with the Expanded or Engineer
+        /// starting equipment (the save's <c>Starting_items</c> 1 or 2; Basic
+        /// is 0, and a career's Auto is stored as Basic). Merged guests do not
+        /// change it.
+        /// </summary>
+        internal static bool Included(string gameMode, int? startingItems) =>
+            gameMode != "Career" || (startingItems ?? 0) >= (int)GameParams.StartingItemsType.Expanded;
+
         internal static List<StartingItems.StartingItem> WithTabletOnce(SaveGameData data, List<StartingItems.StartingItem> items)
         {
-            if (data == null || items == null || !Guests.GuestRegistry.AnyMerged || data.GetBool(GivenKey) == true)
+            if (data == null || items == null || data.GetBool(GivenKey) == true
+                || !Included(data.GetString("Game_mode"), data.GetInt("Starting_items")))
                 return items;
             if (items.Any(i => i.item?.ItemPrefabName == TabletItem.PrefabName))
             {

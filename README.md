@@ -54,6 +54,10 @@ guide). `src/CommsTablet/Guests/` is the host side.
 Each release's zip is attached to its GitHub release here, the same bytes
 as on Nexus Mods, and listed in `repository.json` once that release exists.
 
+**0.1.6**: no hang at the first take-out; ROUTE explained on screen and
+SET SWITCHES on Track Ahead (Dispatcher license); the tablet in the starting
+kit in Free Roam and in careers started with the Expanded or Engineer items.
+
 **0.1.5**: Spawn names what it leaves out, and why; performance
 improvements and bug fixes.
 

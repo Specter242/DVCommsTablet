@@ -33,6 +33,13 @@ namespace CommsTablet.Map
 
         private static View view;
         private static string why;
+        // What SET SWITCHES did, shown in place of the status line for a few seconds.
+        private static string notice;
+        private static float noticeUntil;
+        private const float NoticeSeconds = 6f;
+#if !PUBLIC_RELEASE
+        private static Rect setSwitchesDrawn;
+#endif
         private static ViewKey cachedKey;
         private static bool hasCachedView, cachedPathComplete;
         private static readonly List<(int junction, int branch)> cachedSwitches = new List<(int, int)>();
@@ -297,7 +304,7 @@ namespace CommsTablet.Map
         internal static void Draw(AheadPage owner)
         {
             view = Read();
-            DestinationRow(owner, view != null);
+            DestinationRow(owner, view);
             if (view == null)
             {
                 Status = AheadRoute.Destination == null && why != null && why.StartsWith("Board", StringComparison.Ordinal)
@@ -317,23 +324,24 @@ namespace CommsTablet.Map
             Picture(new Rect(ChartX, ChartY, ChartW, ChartH), texture, textureVersion);
             ChartWords(view, start, total, span);
             Rows(view);
-            Status = StatusLine(view);
+            Status = notice != null && Time.unscaledTime < noticeUntil ? notice : StatusLine(view);
         }
 
         private static Look Look_Well => TabletSkin.Well;
 
-        /// <summary>
-        /// Along the top: where the player sent the train, with CLEAR beside it;
-        /// else SET DESTINATION, which opens the Switches map to pick one, once
-        /// there is a train to route and the map is ready.
-        /// </summary>
-        private static void DestinationRow(AheadPage owner, bool train)
+ private static void DestinationRow(AheadPage owner, View v)
         {
             var destination = AheadRoute.Destination;
+            var toSet = v != null && v.Routed && !showAligned ? SwitchesToSet(v).Count : 0;
+#if !PUBLIC_RELEASE
+            setSwitchesDrawn = Rect.zero;
+#endif
             if (destination != null)
             {
                 Label(new Rect(268, 16, 56, 56), "TO", Heading22);
-                Label(new Rect(324, 16, 620, 56), destination.Name, Stat30);
+                Label(new Rect(324, 16, toSet > 0 ? 380 : 620, 56), destination.Name, Stat30);
+                if (toSet > 0)
+                    SetSwitchesButton(owner, v, new Rect(712, 16, 232, 56));
                 if (Button(new Rect(952, 16, 112, 56), "CLEAR", Plate))
                 {
                     AheadRoute.Destination = null;
@@ -341,9 +349,96 @@ namespace CommsTablet.Map
                 }
                 return;
             }
-            if (Button(new Rect(784, 16, 280, 56), "SET DESTINATION", Plate, train && owner.MapReady))
+            if (toSet > 0)
+                SetSwitchesButton(owner, v, new Rect(496, 16, 280, 56));
+            if (Button(new Rect(784, 16, 280, 56), "SET DESTINATION", Plate, v != null && owner.MapReady))
                 owner.PickDestination();
         }
+
+        private static void SetSwitchesButton(AheadPage owner, View v, Rect r)
+        {
+#if !PUBLIC_RELEASE
+            setSwitchesDrawn = r;
+#endif
+            if (!Button(r, "SET SWITCHES", Plate))
+                return;
+            notice = SetSwitches(v, owner.Where);
+            noticeUntil = Time.unscaledTime + NoticeSeconds;
+            Changed();
+        }
+
+        /// <summary>
+        /// The route's switches set against it from the train's leading end to
+        /// its next reversal (or its end), each junction once: past a reversal
+        /// the train comes back over its own route, which may need a switch the
+        /// other way. Nearest first.
+        /// </summary>
+        private static List<AheadSwitch> SwitchesToSet(View v)
+        {
+            var path = v.Profile.Path;
+            var until = double.MaxValue;
+            foreach (var stop in path.Stops)
+                if (stop.Kind == AheadStopKind.Reversal && stop.Distance > v.Nose + 1 && stop.Distance < until)
+                    until = stop.Distance;
+            var seen = new HashSet<int>();
+            var list = new List<AheadSwitch>();
+            foreach (var s in path.Switches)
+                if (s.Distance >= v.Nose && s.Distance <= until && seen.Add(s.Junction) && !s.Lined)
+                    list.Add(s);
+            return list;
+        }
+
+        /// <summary>
+        /// Throws each switch <see cref="SwitchesToSet"/> lists to the route's
+        /// branch, as the Switches map throws one (the game's own check refuses a
+        /// switch a car stands on), with the Dispatcher license; what happened.
+        /// </summary>
+        private static string SetSwitches(View v, Transform at)
+        {
+            if (!TabletMaps.CanSwitch)
+                return "Setting switches from the tablet takes the Dispatcher license";
+            var list = SwitchesToSet(v);
+            int set = 0, refused = 0;
+            string first = null;
+            foreach (var s in list)
+            {
+                var junction = s.Junction >= 0 && s.Junction < v.Network.Junctions.Length ? v.Network.Junctions[s.Junction] : null;
+                if (junction == null || junction.outBranches == null || s.Branch < 0 || s.Branch >= junction.outBranches.Count)
+                {
+                    refused++;
+                    continue;
+                }
+                if (junction.selectedBranch == s.Branch)
+                    continue;
+                // A two-way switch takes one throw to the other branch; any other is left to the player.
+                if (junction.outBranches.Count != 2 || !TabletMaps.Flip(junction, at))
+                {
+                    refused++;
+                    first = first ?? SwitchName(v.Network, s);
+                    continue;
+                }
+                set++;
+            }
+            var more = CountAgainst(v) - list.Count;
+            var text = set == 0 && refused == 0 ? "Every switch to the next stop is already set for the route"
+                : set == 0 ? $"{Count(refused, "switch", "switches")} could not be thrown now (the first, {first})"
+                : refused == 0 ? $"Set {Count(set, "switch", "switches")} for the route"
+                : $"Set {Count(set, "switch", "switches")}; {refused} could not be thrown now (the first, {first})";
+            return more > 0 ? $"{text}. More past the reversal" : text;
+        }
+
+        /// <summary>The route's switches set against it from the train on, each junction once.</summary>
+        private static int CountAgainst(View v)
+        {
+            var seen = new HashSet<int>();
+            var count = 0;
+            foreach (var s in v.Profile.Path.Switches)
+                if (s.Distance >= v.Nose && seen.Add(s.Junction) && !s.Lined)
+                    count++;
+            return count;
+        }
+
+        private static string Count(int n, string one, string many) => $"{n} {(n == 1 ? one : many)}";
 
         private static void Controls()
         {
@@ -424,7 +519,7 @@ namespace CommsTablet.Map
                 foreach (var w in v.Waypoints)
                 {
                     if (w.Kind == WaypointKind.Switch && !path.Switches[w.SwitchIndex].Lined)
-                        return $"As set, this train leaves the route at {SwitchName(v.Network, path.Switches[w.SwitchIndex])} in {Km(w.Distance - v.Nose)}";
+                        return $"{Count(CountAgainst(v), "switch", "switches")} set against the route, the first {SwitchName(v.Network, path.Switches[w.SwitchIndex])} in {Km(w.Distance - v.Nose)}";
                 }
                 var whose = v.Goal.JobId != null ? $"Job {v.Goal.JobId} to " : "To ";
                 return AheadRoute.ThroughCars
@@ -875,6 +970,24 @@ namespace CommsTablet.Map
         internal static readonly Vector2 AsSetPlateForTest = TurnPlateForTest;
 
         internal static readonly Vector2 RoutePlateForTest = new Vector2(576, 112);
+
+        /// <summary>Where SET SWITCHES was drawn on the last pass; zero when it was not.</summary>
+        internal static Rect SetSwitchesForTest => setSwitchesDrawn;
+
+        internal static List<AheadSwitch> SwitchesToSetForTest(View v) => SwitchesToSet(v);
+
+        internal static int CountAgainstForTest(View v) => CountAgainst(v);
+
+        /// <summary>SET SWITCHES's line, cleared so the next press is read alone.</summary>
+        internal static string NoticeForTest
+        {
+            get => notice;
+            set
+            {
+                notice = value;
+                noticeUntil = 0f;
+            }
+        }
 
         internal static Vector2 RangePlateForTest(int index) => new Vector2(842 + index * 90, 112);
 #endif

@@ -57,6 +57,18 @@ namespace CommsTablet.Guests
                 guest.ResetSession();
         }
 
+ internal static void PrefetchIcons()
+        {
+            foreach (var guest in All)
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                _ = guest.Icon;
+                watch.Stop();
+                if (watch.ElapsedMilliseconds >= 100)
+                    Main.Mod?.Logger.Log($"Guest app '{guest.Name}' took {watch.ElapsedMilliseconds} ms to draw its icon, while the world loaded");
+            }
+        }
+
         private static void Scan()
         {
             Assembly[] assemblies;
@@ -279,6 +291,11 @@ namespace CommsTablet.Guests
             iconAsked = false;
             iconTexture = null;
         }
+
+#if !PUBLIC_RELEASE
+        /// <summary>Whether the icon has been asked for this session, for the self-test.</summary>
+        internal bool IconAskedForTest => iconAsked;
+#endif
 
         // ---- Guarded calls -----------------------------------------------------
 

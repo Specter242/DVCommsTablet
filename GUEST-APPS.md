@@ -381,8 +381,10 @@ declare `Tablet` with the item's prefab name. Then, while `Merged` is true:
 The Comms Tablet does the host's part:
 - A saved tablet of yours, in the inventory, the world, lost and found, or on a
   gadget mount, loads as the Comms Tablet. The next save stores it as one.
-- The starting kit holds the Comms Tablet once per save while any app with a
-  tablet is merged.
+- The starting kit holds the Comms Tablet once per save in every save but a
+  career, and in a career started with the Expanded or Engineer equipment,
+  whether or not an app is merged. (Until Comms Tablet 0.1.6 it was every save
+  while any app with a tablet was merged.)
 
 A save made while merged and loaded without the Comms Tablet loses those
 tablets, since the game can't make the Comms Tablet's item. Your starting kit

@@ -87,6 +87,7 @@ namespace CommsTablet.Check
             SwitchBooks(mods);
             GuestBinding();
             SettingsActions();
+            StartingKit();
             SettingsRows();
             Release();
             BookletChecks.Run(Check);
@@ -323,6 +324,18 @@ namespace CommsTablet.Check
                     $"{assembly.GetName().Name}'s {ModActions.ClassName} binds and lists its buttons",
                     buttons != null ? string.Join("; ", buttons.Select(b => $"{b.Index} {b.Label} ({b.Help ?? "no help"})")) : why);
             }
+        }
+
+        private static void StartingKit()
+        {
+            Check(Tablet.TabletStartingItems.Included("FreeRoam", 0) && Tablet.TabletStartingItems.Included(null, null),
+                "outside a career (the sandbox), every save starts with a tablet, whatever its starting equipment");
+            Check(!Tablet.TabletStartingItems.Included("Career", 0) && !Tablet.TabletStartingItems.Included("Career", null),
+                "a career with the Basic starting equipment (or none recorded) does not, merged guests or not (tracker #21)");
+            Check(Tablet.TabletStartingItems.Included("Career", 1) && Tablet.TabletStartingItems.Included("Career", 2),
+                "a career with the Expanded or Engineer starting equipment does");
+            Check((int)GameParams.StartingItemsType.Basic == 0 && (int)GameParams.StartingItemsType.Expanded == 1 && (int)GameParams.StartingItemsType.Engineer == 2,
+                "the game numbers its starting equipment Basic 0, Expanded 1, Engineer 2, as the rule reads them");
         }
 
         // The Settings app reads settings as Unity Mod Manager's window does (decision 19), presented as decision 20 has it.

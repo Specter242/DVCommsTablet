@@ -81,6 +81,15 @@ namespace CommsTablet.Map
             {
                 Main.Mod?.Logger.LogException("Map: could not set up for the loaded world", e);
             }
+            // The guests' icons, drawn here behind the loading screen rather than at the first take-out (tracker #41).
+            try
+            {
+                Guests.GuestRegistry.PrefetchIcons();
+            }
+            catch (Exception e)
+            {
+                Main.Mod?.Logger.LogException("Could not ask the guest apps for their icons while the world loaded", e);
+            }
         }
 
         private static IEnumerator PrepareLater()

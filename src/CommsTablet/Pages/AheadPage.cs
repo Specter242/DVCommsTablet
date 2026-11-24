@@ -45,6 +45,9 @@ namespace CommsTablet.Pages
 
         internal override string Status => TabletAhead.Status;
 
+        /// <summary>Where the switch sounds play when SET SWITCHES throws, as for the map's.</summary>
+        internal Transform Where => Radio.Where;
+
         internal override void Refresh() { }
 
         internal override void Press(int tile) { }

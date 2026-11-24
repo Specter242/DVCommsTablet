@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 (2026-11-24)
+
+- **No hang the first time you take the tablet out:** the other mods' app
+  icons are now drawn while the world loads.
+- **ROUTE** now says it doesn't throw switches, and Track Ahead counts the
+  switches set against the route.
+- **SET SWITCHES**, on Track Ahead: throws the switches set against the
+  route, as far as its next reversal. Needs the Dispatcher license.
+- **Starting kit:** a new Free Roam game starts with a tablet, and so does a
+  career started with the Expanded or Engineer starting items. With Basic,
+  buy one or use the settings button.
+
 ## 0.1.5 (2026-11-21)
 
 - **Spawn** names the locos and cars it leaves out, and why: a license

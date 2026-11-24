@@ -10,8 +10,10 @@ the tablet just as you would the radio.
 - Buy it in the shops, beside the comms radio.
 - Or press **Give me a comms tablet** in the mod's settings (Unity Mod
   Manager, Ctrl+F10).
-- With Realistic Firing or AI Engineer installed (their versions that know
-  the tablet), the starting kit gives you one, once per save.
+- The starting kit gives you one, once per save: in Free Roam always, and
+  in a career started with the Expanded or Engineer starting equipment
+  (the game's own setting). A career started with Basic has none: buy one
+  or use the settings button.
 
 ## Using it
 
@@ -43,7 +45,9 @@ the tablet just as you would the radio.
   and switches, with the distance and time to what comes next. It follows
   the switches as set, the job of the car at the end of your train, or a
   destination you set with SET DESTINATION (tap a track on the map, then
-  ROUTE; CLEAR drops it).
+  ROUTE; CLEAR drops it). ROUTE throws no switches: Track Ahead shows the
+  ones set against the route in red and counts them, and SET SWITCHES
+  throws them as far as the next reversal (with the Dispatcher license).
 - **Map:** the same map as Switches, straight from the home screen.
 - **Tools:** Rerail, Clear, Startup, and Damage, as on the radio.
 - **Light:** switches the tablet's flashlight on and off.
