@@ -185,7 +185,20 @@ namespace CommsTablet.Check
                 "the cargo loader's confirm sound");
             Check(AccessTools.Property(typeof(DV.ThingTypes.DVObjectModel), "CarTypeToLoadableCargo") != null,
                 "the game's cargo-by-car-type table (Cargo page)");
+            // The VR pointer (tracker #46): the telegrab scan it re-aims, the data it sets, and the game facts it rests on.
+            Check(AccessTools.DeclaredMethod(typeof(TeleGrab), "UpdateTelegrabData") != null, "TeleGrab.UpdateTelegrabData (VR pointer)");
+            Check(AccessTools.PropertySetter(typeof(TeleGrab), nameof(TeleGrab.CurrentTelegrabData)) != null, "TeleGrab.CurrentTelegrabData's setter (VR pointer)");
+            Check(AccessTools.Field(typeof(DV.VR.TelegrabbableInteractionTarget), "handler") is FieldInfo handler && handler.FieldType == typeof(DV.VR.TelegrabInteractionHandler),
+                "a telegrab target's handler (VR pointer: a button another hand is pressing is passed over)");
+            Check(Loads(AccessTools.Method(typeof(TransmogrifyControllers), "AddTelegrab"), "Inventory"),
+                "the telegrab beam's layers include Inventory, the tablet buttons' layer " + CommsTablet.Tablet.TabletItem.ControlLayer);
+            Check(PatchProcessor.GetOriginalInstructions(AccessTools.Method(typeof(DV.CabControls.VRTK.ButtonVRTK), "Awake"))
+                    .Any(i => i.operand is MethodInfo m && m.IsGenericMethod && m.Name == "AddComponent" && m.GetGenericArguments()[0] == typeof(DV.VR.TelegrabbableButton)),
+                "a VR cab button adds its own telegrab target (each tablet button is one)");
         }
+
+        private static bool Loads(MethodBase method, string text) =>
+            method != null && PatchProcessor.GetOriginalInstructions(method).Any(i => i.operand is string s && s == text);
 
         // The save and shop sites still load a prefab by name, which the tablet's lookup wraps.
         private static void LoadSites()

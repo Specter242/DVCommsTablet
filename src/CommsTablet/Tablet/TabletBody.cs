@@ -7,7 +7,9 @@ namespace CommsTablet.Tablet
     /// The shell and inventory art, made in code; no third-party meshes or
     /// textures. The chamfered shell is Realistic Firing's
     /// <c>FiringTabletBody</c> (d0f162e9), in AI Engineer's dark brown
-    /// (decision 15), with a round home button under the screen.
+    /// (decision 15), with a round home button under the screen. The icon is
+    /// rendered from the shell and its screen in the game's own icon style
+    /// (<see cref="RenderIcon"/>); the drawn one stays if that fails.
     /// </summary>
     internal static class TabletBody
     {
@@ -164,6 +166,70 @@ namespace CommsTablet.Tablet
             AccessTools.Field(typeof(InventoryItemSpec), "itemIconSprite").SetValue(spec, icon);
             AccessTools.Field(typeof(InventoryItemSpec), "itemIconSpriteStandard").SetValue(spec, icon);
             AccessTools.Field(typeof(InventoryItemSpec), "itemIconSpriteDropped").SetValue(spec, droppedIcon);
+            RenderIcon(spec);
+        }
+
+        /// <summary>
+        /// Sets the tablet's icon rendered from its own shell and screen, the
+        /// screen showing its home page (<see cref="ItemIcons"/>, Realistic
+        /// Firing's renderer); it keeps the drawn icon if that fails.
+        /// </summary>
+        internal static void RenderIcon(InventoryItemSpec spec)
+        {
+            GameObject model = null;
+            try
+            {
+                model = IconModel();
+                // The clinometer's own view (the tablet is made from it): its face to the viewer, turned a little.
+                ItemIcons.Apply(spec, model, ItemIcons.StockView(spec), TabletItem.PrefabName);
+            }
+            catch (System.Exception error)
+            {
+                Main.Mod?.Logger.Warning("The comms tablet's icon could not be rendered (" + error.Message + "); it keeps its drawn icon");
+            }
+            finally
+            {
+                DestroyIconModel(model);
+            }
+        }
+
+        /// <summary>The tablet's shell with its screen showing the home page, for an icon; let go with <see cref="DestroyIconModel"/>.</summary>
+        private static GameObject IconModel()
+        {
+            var model = new GameObject("[comms tablet icon model]") { hideFlags = HideFlags.HideAndDontSave };
+            Build(model.transform);
+            var page = TabletScreen.SamplePage();
+            var display = new GameObject("screen") { hideFlags = HideFlags.HideAndDontSave };
+            display.transform.SetParent(model.transform, false);
+            display.transform.localPosition = TabletScreen.SurfacePosition;
+            display.AddComponent<MeshFilter>().sharedMesh = TabletScreen.SurfaceMesh();
+            // A lit screen shows its own light; without a page, a dark glass.
+            var screen = page != null
+                ? new Material(Shader.Find("Unlit/Texture")) { mainTexture = page }
+                : new Material(Shader.Find("Standard")) { color = new Color(0.02f, 0.025f, 0.03f) };
+            screen.name = "CommsTablet_IconScreen";
+            display.AddComponent<MeshRenderer>().sharedMaterial = screen;
+            return model;
+        }
+
+        /// <summary>Destroys an <see cref="IconModel"/> with its screen's page, material, and mesh; the shell's are shared and kept.</summary>
+        private static void DestroyIconModel(GameObject model)
+        {
+            if (model == null)
+                return;
+            var display = model.transform.Find("screen");
+            if (display != null)
+            {
+                var material = display.GetComponent<MeshRenderer>().sharedMaterial;
+                if (material != null)
+                {
+                    if (material.mainTexture != null)
+                        Object.DestroyImmediate(material.mainTexture);
+                    Object.DestroyImmediate(material);
+                }
+                Object.DestroyImmediate(display.GetComponent<MeshFilter>().sharedMesh);
+            }
+            Object.DestroyImmediate(model);
         }
 
         // A dark-framed screen with a two-by-two grid of brass-rimmed icons, as on its home screen.

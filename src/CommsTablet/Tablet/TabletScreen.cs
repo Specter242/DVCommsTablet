@@ -15,8 +15,14 @@ namespace CommsTablet.Tablet
     {
         internal const float PixelSize = 0.00028f;
         private const float SurfaceZ = -TabletItem.Thickness * 0.5f - 0.0005f;
-        private const float ButtonDepth = 0.004f;
-        internal const float ButtonFront = SurfaceZ - ButtonDepth;
+        /// <summary>
+        /// How far a button's box stands out from the screen: 4 mm, and 8 mm in
+        /// VR, so a fingertip reaches it sooner (tracker #46). The VR pointer
+        /// picks by where its beam meets the screen, so the depth does not move
+        /// its aim.
+        /// </summary>
+        private static readonly float ButtonDepth = VRManager.IsVREnabled() ? 0.008f : 0.004f;
+        internal static readonly float ButtonFront = SurfaceZ - ButtonDepth;
         internal const int Width = 1080, Height = 924;
         /// <summary>How far the screen sits above the tablet's middle, leaving room below it for the home button.</summary>
         internal const float ScreenRaise = 0.0095f;
@@ -988,6 +994,21 @@ namespace CommsTablet.Tablet
 #endif
 
         /// <summary>
+        /// Where a ray meets the drawn screen, and how far along the ray;
+        /// false if it runs alongside or away. The VR pointer's aim
+        /// (<see cref="TabletPointer"/>).
+        /// </summary>
+        internal bool PointOnScreen(Ray ray, out Vector3 point, out float distance)
+        {
+            point = default;
+            var plane = new Plane(transform.forward, transform.TransformPoint(new Vector3(0f, ScreenRaise, SurfaceZ)));
+            if (!plane.Raycast(ray, out distance))
+                return false;
+            point = ray.GetPoint(distance);
+            return true;
+        }
+
+        /// <summary>
         /// Where on the canvas the player points: on the desktop, the mouse
         /// in mouse mode, else the middle of the view; the point where that
         /// ray meets the screen, which sits <see cref="ScreenRaise"/> above
@@ -1023,6 +1044,13 @@ namespace CommsTablet.Tablet
                     return i;
             return -1;
         }
+
+        /// <summary>A canvas point on the drawn screen, in the world.</summary>
+        internal Vector3 CanvasToWorldForTest(Vector2 canvasPoint) =>
+            transform.TransformPoint(new Vector3((canvasPoint.x - Width * 0.5f) * PixelSize, (Height * 0.5f - canvasPoint.y) * PixelSize + ScreenRaise, SurfaceZ));
+
+        /// <summary>The button object of a slot (the one with the game's control).</summary>
+        internal GameObject SlotObjectForTest(int slot) => slots != null && slot >= 0 && slot < SlotCount ? slots[slot] : null;
 
         /// <summary>The slots in use now.</summary>
         internal int SlotsShown => slots == null ? 0 : slots.Count(s => s.activeSelf);
@@ -1219,19 +1247,143 @@ namespace CommsTablet.Tablet
             GetComponent<DV.CabControls.ItemBase>()?.ReCacheRenderers();
         }
 
+        // ---- The inventory icon's page -------------------------------------
+
+        /// <summary>The home screen's own apps, as <see cref="TabletRadio"/> lists them: name, the game's glyph, the drawn one.</summary>
+        private static readonly (string Name, string Art, string Glyph)[] SampleApps =
+        {
+            ("Vehicles", "UI_TrainLoco", "vehicles"), ("Cargo", "UI_Item", "cargo"), ("Workshop", null, "workshop"),
+            ("Switches", "UI_BookletSchematicMap", "switches"), ("Map", "UI_Map", "map"), ("Track Ahead", null, "ahead"),
+            ("Tools", "UI_Mods", "tools"), ("Light", "UI_Light", "light"), ("Settings", null, "settings"),
+        };
+
+        /// <summary>The display's place on the shell: its quad's middle, in the tablet's frame.</summary>
+        internal static Vector3 SurfacePosition => new Vector3(0f, ScreenRaise, SurfaceZ);
+
+        /// <summary>The display's quad, facing out of the tablet's front (-z), at the screen's size.</summary>
+        internal static Mesh SurfaceMesh()
+        {
+            var w = Width * PixelSize * 0.5f;
+            var h = Height * PixelSize * 0.5f;
+            var mesh = new Mesh { name = "CommsTablet_Screen" };
+            mesh.vertices = new[] { new Vector3(-w, -h, 0), new Vector3(-w, h, 0), new Vector3(w, h, 0), new Vector3(w, -h, 0) };
+            mesh.uv = new[] { Vector2.zero, Vector2.up, Vector2.one, Vector2.right };
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            mesh.RecalculateBounds();
+            mesh.UploadMeshData(true);
+            return mesh;
+        }
+
+        /// <summary>
+        /// The home screen with the tablet's own apps, drawn once with this
+        /// screen's parts through the screens' camera, for the tablet's
+        /// inventory icon (<see cref="TabletBody.RenderIcon"/>); mipmapped,
+        /// not readable. Null if it could not be drawn (logged).
+        /// </summary>
+        internal static Texture2D SamplePage()
+        {
+            GameObject holder = null, screen = null;
+            TabletScreen drawer = null;
+            RenderTexture target = null;
+            var acquired = false;
+            var previous = RenderTexture.active;
+            try
+            {
+                TabletScreenRenderer.Size(Width, Height, PixelSize);
+                var host = TabletScreenRenderer.Acquire();
+                acquired = true;
+                // A screen of no tablet, never active, so it never starts: only its drawing parts, on a canvas of its own.
+                holder = new GameObject("[comms tablet icon page]") { hideFlags = HideFlags.HideAndDontSave };
+                holder.SetActive(false);
+                drawer = holder.AddComponent<TabletScreen>();
+                screen = new GameObject("[comms tablet icon screen]", typeof(RectTransform), typeof(Canvas));
+                var canvas = screen.GetComponent<Canvas>();
+                canvas.renderMode = RenderMode.WorldSpace;
+                screen.transform.SetParent(host, false);
+                screen.transform.localPosition = Vector3.forward;
+                screen.transform.localScale = Vector3.one * PixelSize;
+                screen.layer = TabletScreenRenderer.Layer;
+                canvas.worldCamera = TabletScreenRenderer.Camera;
+                var scaler = screen.AddComponent<CanvasScaler>();
+                scaler.dynamicPixelsPerUnit = TabletSurface.TextScale;
+                scaler.referencePixelsPerUnit = ReferencePixelsPerUnit;
+                drawer.root = screen.GetComponent<RectTransform>();
+                drawer.root.sizeDelta = new Vector2(Width, Height);
+                drawer.DrawSampleHome();
+                target = RenderTexture.GetTemporary(Width, Height, 0, RenderTextureFormat.ARGB32);
+                var camera = TabletScreenRenderer.Camera;
+                camera.targetTexture = target;
+                Canvas.ForceUpdateCanvases();
+                camera.Render();
+                camera.targetTexture = null;
+                var page = new Texture2D(Width, Height, TextureFormat.RGBA32, true)
+                {
+                    name = "CommsTablet_IconPage", wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Trilinear,
+                };
+                RenderTexture.active = target;
+                page.ReadPixels(new Rect(0, 0, target.width, target.height), 0, 0, true);
+                page.Apply(true, true);
+                return page;
+            }
+            catch (System.Exception error)
+            {
+                Main.Mod?.Logger.Warning("The comms tablet's icon could not draw its screen: " + error.Message);
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                if (target != null) RenderTexture.ReleaseTemporary(target);
+                if (drawer != null)
+                {
+                    foreach (var sprite in drawer.panelSprites.Values)
+                        if (sprite != null) Object.DestroyImmediate(sprite);
+                    drawer.panelSprites.Clear();
+                    drawer.root = null;
+                }
+                if (screen != null) Object.DestroyImmediate(screen);
+                if (holder != null) Object.DestroyImmediate(holder);
+                if (acquired) TabletScreenRenderer.Release();
+            }
+        }
+
+        // The home screen as Build and Refresh lay it out, with the tablet's own apps, none lit.
+        private void DrawSampleHome()
+        {
+            Picture("Background", new Rect(0, 0, Width, Height), TabletArt.White, TabletArt.Screen);
+            Panel("Screen", new Rect(0, 0, Width, Height), TabletArt.ScreenBg);
+            var title = Words("Tablet", new Rect(28, 12, 1024, 64), 34, TextAnchor.MiddleLeft, TabletArt.Amber);
+            title.fontStyle = FontStyle.Bold;
+            title.text = "Comms Tablet";
+            for (var i = 0; i < SampleApps.Length && i < AppsPerPage; i++)
+            {
+                var (name, artName, glyph) = SampleApps[i];
+                Picture("App shadow", AppShadow(i), TabletArt.Shadow, Color.white);
+                Picture("App icon", AppBadge(i), TabletArt.Badge, Color.white);
+                var art = TabletIcons.Find(artName);
+                if (art != null)
+                {
+                    var image = Rect("App picture", AppPicture(i)).gameObject.AddComponent<Image>();
+                    image.preserveAspect = true;
+                    image.raycastTarget = false;
+                    image.sprite = art;
+                    image.color = TabletArt.Amber;
+                }
+                else
+                    Picture("App symbol", AppPicture(i), TabletArt.Glyph(glyph), TabletArt.Amber);
+                Words("App name", AppLabel(i), 30, TextAnchor.MiddleCenter, TabletArt.Text).text = name;
+            }
+            Panel("Status", new Rect(12, 852, 1056, 62), TabletArt.Well);
+            Words("Mode", new Rect(30, 854, 600, 26), 21, TextAnchor.MiddleLeft, TabletArt.Dim).text = "COMMS TABLET";
+            Words("Prompt", new Rect(30, 876, 720, 36), 28, TextAnchor.MiddleLeft, TabletArt.Text).text = "Choose an app";
+        }
+
         private void BuildSurface()
         {
             var display = new GameObject("[comms tablet display surface]");
             display.transform.SetParent(transform, false);
-            display.transform.localPosition = new Vector3(0f, ScreenRaise, SurfaceZ);
-            var w = Width * PixelSize * 0.5f;
-            var h = Height * PixelSize * 0.5f;
-            screenMesh = new Mesh { name = "CommsTablet_Screen" };
-            screenMesh.vertices = new[] { new Vector3(-w, -h, 0), new Vector3(-w, h, 0), new Vector3(w, h, 0), new Vector3(w, -h, 0) };
-            screenMesh.uv = new[] { Vector2.zero, Vector2.up, Vector2.one, Vector2.right };
-            screenMesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
-            screenMesh.RecalculateBounds();
-            screenMesh.UploadMeshData(true);
+            display.transform.localPosition = SurfacePosition;
+            screenMesh = SurfaceMesh();
             display.AddComponent<MeshFilter>().sharedMesh = screenMesh;
             screenMaterial = new Material(Shader.Find("Unlit/Texture")) { name = "CommsTablet_Display" };
             surface = display.AddComponent<MeshRenderer>();

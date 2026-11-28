@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 (2026-11-27)
+
+- **VR:** the small buttons are easier to hit. Hold grip with an empty hand
+  and point the game's beam at the tablet: the trigger presses the button
+  under the beam's dot, not its neighbor. Buttons also take a fingertip a
+  little sooner.
+- **Inventory icon:** the tablet's icon now matches the game's own icons.
+
 ## 0.1.6 (2026-11-24)
 
 - **No hang the first time you take the tablet out:** the other mods' app
